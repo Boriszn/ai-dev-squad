@@ -27,7 +27,7 @@ def main() -> None:
 
     settings = get_settings()
     state = build_initial_state(
-        task="Create or update file named demo_note.md.",
+        task="Create or update file named demo_note.md",
         approval_status="approved",
         repo_path="/Users/boriszaikin/_Projects/my-test-repo",
         provider_name=settings.default_model_provider,

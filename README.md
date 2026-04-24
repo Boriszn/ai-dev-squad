@@ -1,33 +1,33 @@
 # AI Dev Squad
 
-AI Dev Squad is a local-first MVP for a Human-in-the-Loop AI coding system.
+AI Dev Squad is a local-first Human-in-the-Loop AI coding system.
 
 The project uses:
-- **LangGraph** for the workflow and agent orchestration.
-- **Local tools** for coding and testing.
-- **Codex CLI** as the default coding provider.
-- **A local model provider placeholder** as the second provider for offline mode later.
-- **Streamlit** as the future chat UI, included but not active yet.
+- **LangGraph** for the workflow and agent orchestration
+- **Local tools** for coding and testing
+- **Codex CLI** as the default coding provider
+- **A local model provider placeholder** as the second provider for offline mode later
+- **Streamlit** as the future chat UI, included but not active yet
 
 ## Goal
 
 Build a small agent squad with three roles:
 
 1. **Orchestrator Agent**
-   - Understands the user task.
-   - Builds a simple execution plan.
-   - Decides whether the next step is approval, development, or testing.
+   - Understands the user task
+   - Builds a simple execution plan
+   - Decides whether the next step is approval, development, or testing
 
 2. **Developer Agent**
-   - Uses a coding provider to create or update code.
-   - Starts with **Codex CLI** as the default provider.
-   - Can later switch to a local model provider without changing the orchestration logic.
+   - Uses a coding provider to create or update code
+   - Starts with **Codex CLI** as the default provider
+   - Can later switch to a local model provider without changing the orchestration logic
 
 3. **Tester Agent**
-   - Runs local test commands.
-   - Returns a simple test summary and status.
+   - Runs local test commands
+   - Returns a simple test summary and status
 
-## Current MVP scope
+## Current scope
 
 This repository contains a clean starter scaffold with:
 
@@ -69,6 +69,7 @@ ai-dev-squad/
 ├── README.md
 ├── requirements.txt
 ├── .env.example
+├── langgraph.json
 ├── app/
 │   ├── __init__.py
 │   ├── main.py
@@ -174,9 +175,9 @@ Instead it calls the **Model Router**.
 
 This keeps the design clean:
 
-- `CodexProvider` is the default provider.
-- `LocalProvider` is the offline placeholder.
-- You can add new providers later without changing the graph flow.
+- `CodexProvider` is the default provider
+- `LocalProvider` is the offline placeholder
+- You can add new providers later without changing the graph flow
 
 ## Default provider
 
@@ -200,7 +201,7 @@ This provider is intentionally simple for now. It is here to make the switch eas
 
 ## Human-in-the-Loop
 
-This MVP is designed with a hard approval gate:
+This project is designed with a hard approval gate:
 
 - no development step without approval
 - no test step without approval
@@ -208,38 +209,147 @@ This MVP is designed with a hard approval gate:
 For now the approval value is passed in state.  
 Later the Streamlit UI can collect it from the user.
 
-## Quick start
+## Run locally
 
-### 1. Create a virtual environment
+### 1. Open the project folder
 
 ```bash
-python -m venv .venv
+cd ai-dev-squad
+```
+
+### 2. Create a virtual environment
+
+```bash
+python3 -m venv .venv
+```
+
+### 3. Activate the virtual environment
+
+```bash
 source .venv/bin/activate
 ```
 
-### 2. Install packages
+### 4. Install packages
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### 3. Copy the environment file
+### 5. Copy the environment file
 
 ```bash
 cp .env.example .env
 ```
 
-### 4. Run the local demo
+### 6. Check Codex CLI login
 
 ```bash
-python scripts/run_local.py
+codex login status
 ```
 
-### 5. Run tests
+Expected result:
+
+```text
+Logged in using ChatGPT
+```
+
+### 7. Review the `.env` file
+
+Example values:
+
+```env
+APP_ENV=local
+APP_NAME=AI Dev Squad
+DEFAULT_MODEL_PROVIDER=codex
+CODEX_CLI_COMMAND=codex
+LOCAL_MODEL_NAME=qwen2.5-coder:7b
+DEFAULT_TEST_COMMAND=pytest -q
+ENABLE_MOCK_TOOLS=false
+```
+
+### 8. Run the local workflow
+
+```bash
+python3 scripts/run_local.py
+```
+
+This will:
+- build the workflow state
+- run the Orchestrator
+- run approval logic
+- call the Developer Agent
+- call the Tester Agent
+- print the result in the console
+
+### 9. Run tests for the project
 
 ```bash
 pytest
 ```
+
+## Run with LangGraph Studio
+
+### 1. Install LangGraph CLI
+
+```bash
+pip install -U "langgraph-cli[inmem]"
+```
+
+### 2. Add LangSmith settings to `.env`
+
+```env
+LANGSMITH_API_KEY=your_pat_token_here
+LANGSMITH_TRACING=true
+```
+
+If preferred, tracing can also be turned off:
+
+```env
+LANGSMITH_TRACING=false
+```
+
+### 3. Check `langgraph.json`
+
+Example:
+
+```json
+{
+  "dependencies": ["."],
+  "graphs": {
+    "agent": "./app/graph/workflow.py:graph"
+  },
+  "env": ".env"
+}
+```
+
+### 4. Start the local LangGraph server
+
+```bash
+langgraph dev
+```
+
+Expected output includes:
+- local API URL
+- Studio UI URL
+- API docs URL
+
+### 5. Open Studio
+
+Open the Studio URL shown in the terminal, for example:
+
+```text
+https://smith.langchain.com/studio/?baseUrl=http://127.0.0.1:2024
+```
+
+### 6. Inspect the workflow
+
+In Studio you can:
+- view the graph
+- run the flow
+- inspect node state
+- inspect messages
+- inspect approval status
+- inspect development and test results
 
 ## Streamlit UI
 
@@ -253,16 +363,17 @@ streamlit run app/ui/streamlit_app.py
 
 ## Notes
 
-- This scaffold is intentionally simple.
-- The graph works with mock-friendly logic.
-- Real Codex use depends on local CLI setup.
-- The local model path is a placeholder for the next phase.
+- This scaffold is intentionally simple
+- Real Codex use depends on local CLI setup
+- The local model path is a placeholder for the next phase
+- LangGraph Studio is useful for graph debugging and state inspection
+- Streamlit will be better later for the real user-facing approval flow
 
 ## Next steps
 
-1. Replace mock developer execution with stricter Codex task handling.
-2. Add real approval capture from Streamlit.
-3. Add richer test result parsing.
-4. Add persistent task history.
-5. Add ChatGPT + MCP integration later.
-
+1. Add real approval capture from Streamlit
+2. Improve task-aware test logic
+3. Add richer result and history tracking
+4. Add a real local model provider
+5. Add ChatGPT + MCP integration later
+This repository is under active development, and the docs will continue to evolve with each iteration.
