@@ -28,7 +28,7 @@ class ModelRouter:
         Raises:
             ValueError: If the provider name is unknown.
         """
-        selected_name = provider_name or self.default_provider_name
+        selected_name = (provider_name or self.default_provider_name).strip().lower()
         provider = self.providers.get(selected_name)
 
         if provider is None:

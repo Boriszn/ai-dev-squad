@@ -1,15 +1,17 @@
 """Workflow builder for AI Dev Squad.
 
-This module builds and exports the LangGraph workflow used by the MVP.
+This module builds and exports the LangGraph workflow used by the project.
 
 Why this file matters:
 - It wires together the Orchestrator, Developer, and Tester agents
 - It defines the workflow nodes and transitions
 - It exports a compiled `graph` object so LangGraph Studio can load it
 
-Important:
-LangGraph Studio expects an exported variable like `graph`.
-That is why this file creates the workflow and exposes it at the bottom.
+This version supports the Human-in-the-Loop flow more clearly:
+- planning always moves to approval
+- approval can continue to development
+- approval can end the workflow
+- approval can stay in the approval step while waiting
 """
 
 from __future__ import annotations
@@ -46,7 +48,7 @@ def build_workflow(settings: Settings):
     """Build and compile the LangGraph workflow.
 
     This function creates all agent objects, connects them to the required
-    tools/providers, defines the graph nodes, and wires the transitions
+    tools and providers, defines the graph nodes, and wires the transitions
     between steps.
 
     Args:
@@ -56,7 +58,7 @@ def build_workflow(settings: Settings):
         A compiled LangGraph workflow object.
     """
     # Create the Orchestrator Agent.
-    # This agent plans the work and handles approval logic.
+    # This agent plans the work and controls the approval phase.
     orchestrator = OrchestratorAgent()
 
     # Create the model router used by the Developer Agent.
@@ -82,7 +84,7 @@ def build_workflow(settings: Settings):
     graph = StateGraph(WorkflowState)
 
     # Register workflow nodes.
-    # We use `partial(...)` to inject the already-created agents into the node
+    # We use partial(...) to inject already-created agents into the node
     # functions without changing the node function signatures.
     graph.add_node(
         "orchestrator_plan",
@@ -105,7 +107,7 @@ def build_workflow(settings: Settings):
     # Start the workflow with the Orchestrator planning step.
     graph.add_edge(START, "orchestrator_plan")
 
-    # After the planning step, route to approval.
+    # After planning, always move to the approval step.
     graph.add_conditional_edges(
         "orchestrator_plan",
         route_after_plan,
@@ -116,12 +118,14 @@ def build_workflow(settings: Settings):
 
     # After approval:
     # - go to Developer if approved
-    # - end early if not approved
+    # - end the workflow if rejected
+    # - stay on approval if still waiting
     graph.add_conditional_edges(
         "approval",
         route_after_approval,
         {
             "developer": "developer",
+            "approval": "approval",
             "end": END,
         },
     )
