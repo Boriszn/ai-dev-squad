@@ -1,6 +1,8 @@
+![alt text](image.png)
+
 # AI Dev Squad
 
-AI Dev Squad is a local-first Human-in-the-Loop AI coding system.
+AI Dev Squad is a local-first Human-in-the-Loop AI coding system. (Alfa Version)
 
 The project uses:
 - **LangGraph** for the workflow and agent orchestration
@@ -37,9 +39,8 @@ This repository contains a clean starter scaffold with:
 - Codex provider wrapper
 - Local provider placeholder
 - Tool layer
-- Inactive Streamlit UI
+- Streamlit UI
 - Unit tests
-- Extra project docs
 
 ## Architecture overview
 
