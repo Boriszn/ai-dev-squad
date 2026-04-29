@@ -35,7 +35,11 @@ from app.agents.orchestrator import OrchestratorAgent
 from app.config.settings import get_settings
 from app.services.execution_service import run_workflow
 from app.services.task_service import build_initial_state
-from app.ui.components import render_chat_message, render_pending_action_bar
+from app.ui.components import (
+    render_chat_message,
+    render_pending_action_bar,
+    render_sidebar_progress_panel,
+)
 
 
 def initialize_session_state() -> None:
@@ -57,6 +61,24 @@ def initialize_session_state() -> None:
 
     if "sidebar_approval_note" not in st.session_state:
         st.session_state.sidebar_approval_note = ""
+
+    if "sidebar_run_snapshot" not in st.session_state:
+        st.session_state.sidebar_run_snapshot = {
+            "status": "idle",
+            "provider_name": st.session_state.sidebar_provider_name,
+            "model_status": {},
+        }
+
+
+def update_sidebar_run_snapshot(data: dict[str, Any]) -> None:
+    """Merge a partial run snapshot into sidebar state.
+
+    Args:
+        data: Partial snapshot fields to merge into current sidebar snapshot.
+    """
+    current = dict(st.session_state.sidebar_run_snapshot)
+    current.update(data)
+    st.session_state.sidebar_run_snapshot = current
 
 
 def add_user_message(content: str) -> None:
@@ -199,6 +221,13 @@ def render_sidebar() -> None:
             help="Default coding provider for the Developer Agent.",
         )
 
+        if st.session_state.sidebar_run_snapshot.get("status") == "idle":
+            update_sidebar_run_snapshot(
+                {
+                    "provider_name": st.session_state.sidebar_provider_name,
+                }
+            )
+
         st.session_state.sidebar_approval_note = st.text_input(
             "Approval note",
             value=st.session_state.sidebar_approval_note,
@@ -208,7 +237,15 @@ def render_sidebar() -> None:
         if st.button("Clear chat", use_container_width=True):
             st.session_state.chat_history = []
             st.session_state.pending_request = None
+            st.session_state.sidebar_run_snapshot = {
+                "status": "idle",
+                "provider_name": st.session_state.sidebar_provider_name,
+                "model_status": {},
+            }
             st.rerun()
+
+        st.divider()
+        render_sidebar_progress_panel(st.session_state.sidebar_run_snapshot)
 
 
 def render_chat_history() -> None:
@@ -237,12 +274,27 @@ def handle_new_task(task_text: str) -> None:
     add_user_message(normalized_task)
 
     with st.spinner("Creating plan..."):
+        update_sidebar_run_snapshot(
+            {
+                "status": "planning",
+                "provider_name": provider_name,
+                "model_status": {},
+            }
+        )
         plan_preview = build_plan_preview(
             task=normalized_task,
             repo_path=repo_path,
             provider_name=provider_name,
             approval_note=approval_note,
         )
+
+    update_sidebar_run_snapshot(
+        {
+            "status": plan_preview.get("status", "waiting_for_approval"),
+            "provider_name": provider_name,
+            "model_status": {},
+        }
+    )
 
     add_assistant_message(
         content="I created a plan for your request. Please review and confirm.",
@@ -277,6 +329,12 @@ def handle_pending_action(action: str) -> None:
 
     if action == "approved":
         add_assistant_message("Approval received. Running developer and tester now.")
+        update_sidebar_run_snapshot(
+            {
+                "status": "developing",
+                "provider_name": provider_name,
+            }
+        )
 
         with st.spinner("Running approved workflow..."):
             result = execute_approved_workflow(
@@ -285,6 +343,16 @@ def handle_pending_action(action: str) -> None:
                 provider_name=provider_name,
                 approval_note=approval_note,
             )
+
+        development_result = result.get("development_result", {}) or {}
+        model_status = development_result.get("model_status", {}) or {}
+        update_sidebar_run_snapshot(
+            {
+                "status": result.get("status", "finished"),
+                "provider_name": result.get("provider_name", provider_name),
+                "model_status": model_status,
+            }
+        )
 
         add_assistant_message(
             content=f"Workflow finished with status: {result.get('status', 'unknown')}.",
@@ -296,11 +364,25 @@ def handle_pending_action(action: str) -> None:
 
     if action == "rejected":
         add_assistant_message("Request rejected. No code changes were made.")
+        update_sidebar_run_snapshot(
+            {
+                "status": "rejected",
+                "provider_name": provider_name,
+                "model_status": {},
+            }
+        )
         clear_pending_request()
         st.rerun()
 
     if action == "cancelled":
         add_assistant_message("Request cancelled. Nothing was executed.")
+        update_sidebar_run_snapshot(
+            {
+                "status": "cancelled",
+                "provider_name": provider_name,
+                "model_status": {},
+            }
+        )
         clear_pending_request()
         st.rerun()
 

@@ -13,6 +13,7 @@ Main behavior:
 
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -186,7 +187,7 @@ class CodexTool:
             "model_status": status_info,
         }
 
-    def _extract_codex_status(self, stderr_text: str) -> dict[str, str]:
+    def _extract_codex_status(self, stderr_text: str) -> dict[str, Any]:
         """Extract simple status details from Codex CLI output.
 
         Codex prints useful execution details to stderr, including model
@@ -196,10 +197,17 @@ class CodexTool:
             stderr_text: Raw stderr text returned by Codex CLI.
 
         Returns:
-            A dictionary with parsed model and provider backend details.
+            A dictionary with parsed model, provider backend, and token usage.
         """
         model = "unknown"
         provider_backend = "unknown"
+        tokens_used: int | None = None
+
+        token_patterns = [
+            re.compile(r"tokens\s*used\s*:\s*([0-9][0-9,]*)", re.IGNORECASE),
+            re.compile(r"token\s*usage\s*:\s*([0-9][0-9,]*)", re.IGNORECASE),
+            re.compile(r"total\s*tokens\s*:\s*([0-9][0-9,]*)", re.IGNORECASE),
+        ]
 
         for line in stderr_text.splitlines():
             line = line.strip()
@@ -208,7 +216,19 @@ class CodexTool:
             elif line.startswith("provider:"):
                 provider_backend = line.split("provider:", 1)[1].strip()
 
+            if tokens_used is None:
+                for pattern in token_patterns:
+                    match = pattern.search(line)
+                    if match:
+                        parsed_value = match.group(1).replace(",", "")
+                        try:
+                            tokens_used = int(parsed_value)
+                        except ValueError:
+                            tokens_used = None
+                        break
+
         return {
             "model": model,
             "provider_backend": provider_backend,
+            "tokens_used": tokens_used,
         }

@@ -18,6 +18,84 @@ from typing import Any
 import streamlit as st
 
 
+def map_status_to_progress(status: str) -> tuple[float, str]:
+    """Map workflow status to sidebar progress value and label.
+
+    Progress model uses these steps:
+    - Planning
+    - Waiting for approval
+    - Developing
+    - Testing
+    - Finished
+
+    Args:
+        status: Current workflow status string.
+
+    Returns:
+        Tuple of (progress_ratio, label).
+    """
+    normalized = (status or "").strip().lower()
+
+    if not normalized or normalized == "idle":
+        return (0.0, "Idle (no run yet)")
+
+    if normalized in {"planning"}:
+        return (0.2, "Planning")
+
+    if normalized in {"waiting_for_approval", "pending"}:
+        return (0.4, "Waiting for approval")
+
+    if normalized in {"approved", "developing"}:
+        return (0.6, "Developing")
+
+    if normalized in {"developed", "testing", "tested"}:
+        return (0.8, "Testing")
+
+    if normalized == "finished":
+        return (1.0, "Finished")
+
+    if normalized in {"rejected", "cancelled"}:
+        return (0.4, f"Stopped: {normalized}")
+
+    if normalized in {"development_failed", "test_failed", "failed", "timeout"}:
+        return (0.8, f"Stopped: {normalized}")
+
+    return (0.0, f"Status: {normalized}")
+
+
+def render_sidebar_progress_panel(run_snapshot: dict[str, Any]) -> None:
+    """Render workflow progress and run usage details in sidebar.
+
+    Args:
+        run_snapshot: Latest run snapshot containing status and optional
+            development/model metadata.
+    """
+    status = str(run_snapshot.get("status", "idle"))
+    progress_ratio, progress_label = map_status_to_progress(status)
+
+    st.subheader("Workflow progress")
+    st.progress(progress_ratio)
+    st.caption(progress_label)
+
+    model_status = run_snapshot.get("model_status", {}) or {}
+    tokens_used = model_status.get("tokens_used")
+
+    st.subheader("Usage")
+    if isinstance(tokens_used, int):
+        st.write(f"Tokens used in this run: {tokens_used}")
+    else:
+        st.write("Tokens used: not available")
+
+    provider_name = str(model_status.get("provider") or run_snapshot.get("provider_name") or "unknown")
+    provider_backend = str(model_status.get("provider_backend") or "not available")
+    model_name = str(model_status.get("model") or "not available")
+
+    st.subheader("Provider / model status")
+    st.write(f"Provider: {provider_name}")
+    st.write(f"Backend: {provider_backend}")
+    st.write(f"Model: {model_name}")
+
+
 def render_chat_message(message: dict[str, Any], index: int) -> None:
     """Render one chat message.
 
