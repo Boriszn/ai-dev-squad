@@ -37,7 +37,7 @@ This repository contains a clean starter scaffold with:
 - Agent classes
 - Model router
 - Codex provider wrapper
-- Local provider placeholder
+- Local provider (defaut local model: qwen2.5-coder:7b )
 - Tool layer
 - Streamlit UI
 - Unit tests
