@@ -1,4 +1,4 @@
-![alt text](image.png)
+![alt text](image-1.png)
 
 # AI Dev Squad
 
@@ -55,7 +55,7 @@ User / Future Chat UI
         |
         v
    Developer Agent ----> Model Router ----> Codex Provider (default)
-        |                                  Local Provider (placeholder)
+        |                                  Local Provider (offline model)
         v
    Tester Agent ----> Test Runner
         |
