@@ -1,8 +1,20 @@
 ![alt text](image-1.png)
 
+
 # AI Dev Squad
 
-AI Dev Squad is a local-first Human-in-the-Loop AI coding system. (Alfa Version)
+AI coding tools can lock us into one vendor, one model, or one workflow.
+Prices can change, providers can change, and context can get lost when switching between models.
+Most tools also give limited control over how code is planned, changed, tested, and reverted.
+
+## Project Vision
+
+AI Dev Squad is a local-first agentic development system where we stay in control.
+We can choose the model, switch between AI providers, keep project context, and decide when agents are allowed to act.
+
+## Project Stack
+
+![alt text](image-2.png)
 
 The project uses:
 - **LangGraph** for the workflow and agent orchestration
@@ -42,26 +54,7 @@ This repository contains a clean starter scaffold with:
 - Streamlit UI
 - Unit tests
 
-## Architecture overview
-
-```text
-User / Future Chat UI
-        |
-        v
-  Orchestrator Agent
-        |
-        v
-   Approval Step
-        |
-        v
-   Developer Agent ----> Model Router ----> Codex Provider (default)
-        |                                  Local Provider (offline model)
-        v
-   Tester Agent ----> Test Runner
-        |
-        v
-     Final Result
-```
+![alt text](image-3.png)
 
 ## Project structure
 
@@ -322,7 +315,7 @@ Example:
   "env": ".env"
 }
 ```
-
+---
 ### 4. Start the local LangGraph server
 
 ```bash
@@ -352,6 +345,7 @@ In Studio you can:
 - inspect approval status
 - inspect development and test results
 
+---
 ## Streamlit UI
 
 The Streamlit UI files are included but not active yet.
