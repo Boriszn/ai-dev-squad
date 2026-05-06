@@ -14,7 +14,7 @@ We can choose the model, switch between AI providers, keep project context, and 
 
 ## Project Stack
 
-![alt text](image-2.png)
+![alt text](architecture-main.png)
 
 The project uses:
 - **LangGraph** for the workflow and agent orchestration
