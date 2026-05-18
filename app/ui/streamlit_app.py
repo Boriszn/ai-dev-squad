@@ -9,12 +9,18 @@ Current goals:
 - ask for human approval with buttons
 - run the workflow only after approval
 - show final result as assistant messages
+- support both Codex and local provider selection from the UI
 
 Important note:
 The current graph does not yet use a true interrupt/resume approval flow.
 Because of that, this UI handles the approval interaction at the UI layer:
 - first build the plan only
 - then run the full workflow when the user clicks Approve
+
+Local provider note:
+The first local provider version is generation-only.
+It can return implementation guidance and code suggestions, but it does
+not directly apply file changes yet.
 """
 
 from __future__ import annotations
@@ -32,7 +38,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from app.agents.orchestrator import OrchestratorAgent
-from app.config.settings import get_settings
+from app.config.settings import Settings, get_settings
 from app.services.execution_service import run_workflow
 from app.services.task_service import build_initial_state
 from app.ui.components import (
@@ -159,6 +165,14 @@ def build_plan_preview(
     messages.append("Workflow is waiting for human approval.")
     messages.append("Use Approve, Reject, or Cancel to continue.")
 
+    # Add a local-provider note into the preview so the UI is clear
+    # before the user clicks Approve.
+    if provider_name == "local":
+        messages.append(
+            "Local provider is in generation-only mode. "
+            "It can suggest implementation output, but it does not write files yet."
+        )
+
     return {
         **state,
         **plan_result,
@@ -199,8 +213,12 @@ def execute_approved_workflow(
     return run_workflow(state=state, settings=settings)
 
 
-def render_sidebar() -> None:
-    """Render sidebar configuration controls."""
+def render_sidebar(settings: Settings) -> None:
+    """Render sidebar configuration controls.
+
+    Args:
+        settings: Application settings used to show local provider details.
+    """
     with st.sidebar:
         st.header("Run settings")
 
@@ -212,7 +230,11 @@ def render_sidebar() -> None:
 
         provider_options = ["codex", "local"]
         current_provider = st.session_state.sidebar_provider_name
-        current_index = provider_options.index(current_provider) if current_provider in provider_options else 0
+        current_index = (
+            provider_options.index(current_provider)
+            if current_provider in provider_options
+            else 0
+        )
 
         st.session_state.sidebar_provider_name = st.selectbox(
             "Provider",
@@ -221,12 +243,25 @@ def render_sidebar() -> None:
             help="Default coding provider for the Developer Agent.",
         )
 
+        # Keep the sidebar progress snapshot aligned with the currently selected
+        # provider while no workflow is active yet.
         if st.session_state.sidebar_run_snapshot.get("status") == "idle":
             update_sidebar_run_snapshot(
                 {
                     "provider_name": st.session_state.sidebar_provider_name,
                 }
             )
+
+        # Show provider-specific details to make local provider behavior clearer.
+        if st.session_state.sidebar_provider_name == "local":
+            st.info(
+                "Local provider is active. "
+                "This version returns implementation guidance but does not write files yet."
+            )
+            st.caption(f"Local model: {settings.local_model_name}")
+            st.caption(f"Ollama URL: {settings.ollama_base_url}")
+        else:
+            st.caption("Codex provider is active.")
 
         st.session_state.sidebar_approval_note = st.text_input(
             "Approval note",
@@ -328,7 +363,14 @@ def handle_pending_action(action: str) -> None:
     approval_note = pending_request["approval_note"]
 
     if action == "approved":
-        add_assistant_message("Approval received. Running developer and tester now.")
+        if provider_name == "local":
+            add_assistant_message(
+                "Approval received. Running local provider and tester now. "
+                "Note: local provider is currently generation-only."
+            )
+        else:
+            add_assistant_message("Approval received. Running developer and tester now.")
+
         update_sidebar_run_snapshot(
             {
                 "status": "developing",
@@ -346,6 +388,7 @@ def handle_pending_action(action: str) -> None:
 
         development_result = result.get("development_result", {}) or {}
         model_status = development_result.get("model_status", {}) or {}
+
         update_sidebar_run_snapshot(
             {
                 "status": result.get("status", "finished"),
@@ -353,6 +396,13 @@ def handle_pending_action(action: str) -> None:
                 "model_status": model_status,
             }
         )
+
+        # Add one extra explanatory message for the current local-provider mode.
+        if provider_name == "local":
+            add_assistant_message(
+                "Local provider finished. This run produced coding guidance and model output. "
+                "Direct file changes are not implemented for the local provider yet."
+            )
 
         add_assistant_message(
             content=f"Workflow finished with status: {result.get('status', 'unknown')}.",
@@ -396,7 +446,8 @@ def main() -> None:
     )
 
     initialize_session_state()
-    render_sidebar()
+    settings = get_settings()
+    render_sidebar(settings)
 
     st.title("AI Dev Squad")
     st.caption("Human-in-the-Loop AI coding workflow")

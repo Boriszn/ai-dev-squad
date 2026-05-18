@@ -3,11 +3,17 @@
 These helpers decide where the workflow should go next based on the
 current shared state.
 
-This version is designed for a real Human-in-the-Loop flow:
+Current behavior:
 - planning always moves to approval
-- approval can continue, stop, or stay waiting
+- approval can continue or stop
+- pending approval stops cleanly for now
 - development continues only if it succeeded
 - testing always moves to finalize
+
+Important note:
+The current project does not yet use a true interrupt/resume approval flow.
+Because of that, a pending approval should end the current graph run
+cleanly instead of looping forever.
 """
 
 from __future__ import annotations
@@ -37,7 +43,7 @@ def route_after_approval(state: WorkflowState) -> str:
     Possible outcomes:
     - approved -> continue to developer
     - rejected -> stop the workflow
-    - waiting_for_approval / pending -> stay on approval
+    - pending / waiting_for_approval -> stop the workflow for now
 
     Args:
         state: Shared workflow state.
@@ -52,12 +58,9 @@ def route_after_approval(state: WorkflowState) -> str:
     if status == "approved" or approval_status == "approved":
         return "developer"
 
-    # Explicit rejection ends the workflow.
-    if status == "rejected" or approval_status == "rejected":
-        return "end"
-
-    # Default path: still waiting for human decision.
-    return "approval"
+    # For now, both rejected and pending end the current graph run.
+    # Pending approval is handled by the UI layer, not by looping here.
+    return "end"
 
 
 def route_after_development(state: WorkflowState) -> str:

@@ -125,7 +125,6 @@ def build_workflow(settings: Settings):
         route_after_approval,
         {
             "developer": "developer",
-            "approval": "approval",
             "end": END,
         },
     )

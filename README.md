@@ -1,15 +1,29 @@
 ![alt text](image-1.png)
 
-
 # AI Dev Squad
 
-AI coding tools can lock us into one vendor, one model, or one workflow.
-Prices can change, providers can change, and context can get lost when switching between models.
-Most tools also give limited control over how code is planned, changed, tested, and reverted.
+AI Dev Squad is a local-first agentic development system with Human-in-the-Loop control.
+
+The goal is simple:
+use AI to help plan, write, and test code, while keeping people in control of what happens and when it happens.
+
+## Why this project exists
+
+Most AI coding tools are tied to one vendor, one model, or one workflow.  
+That makes it harder to switch providers, keep context, control changes, and build our own process.
+
+AI Dev Squad is built to solve that.
+
+With this project, we can:
+- choose the model
+- switch between providers
+- keep project context
+- control when agents are allowed to act
+- add approval before code changes happen
 
 ## Project Vision
 
-AI Dev Squad is a local-first agentic development system where we stay in control.
+AI Dev Squad is a local-first agentic development system where we stay in control.  
 We can choose the model, switch between AI providers, keep project context, and decide when agents are allowed to act.
 
 ## Project Stack
@@ -17,44 +31,77 @@ We can choose the model, switch between AI providers, keep project context, and 
 ![alt text](architecture-main.png)
 
 The project uses:
-- **LangGraph** for the workflow and agent orchestration
-- **Local tools** for coding and testing
+- **LangGraph** for workflow and orchestration
 - **Codex CLI** as the default coding provider
-- **A local model provider placeholder** as the second provider for offline mode later
-- **Streamlit** as the future chat UI, included but not active yet
+- **Ollama** for the local/offline provider
+- **Streamlit** for the user-facing chat UI
+- **LangGraph Studio** for graph and state inspection
 
-## Goal
+## What it does
 
-Build a small agent squad with three roles:
+AI Dev Squad uses a small agent team:
 
-1. **Orchestrator Agent**
-   - Understands the user task
-   - Builds a simple execution plan
-   - Decides whether the next step is approval, development, or testing
+### Orchestrator Agent
+- understands the user request
+- creates a plan
+- controls the approval flow
 
-2. **Developer Agent**
-   - Uses a coding provider to create or update code
-   - Starts with **Codex CLI** as the default provider
-   - Can later switch to a local model provider without changing the orchestration logic
+### Developer Agent
+- uses the selected coding provider
+- supports **Codex CLI**
+- supports a **local Ollama-based provider**
+- can switch providers without changing the workflow design
 
-3. **Tester Agent**
-   - Runs local test commands
-   - Returns a simple test summary and status
+### Tester Agent
+- runs local tests
+- returns a simple result summary
 
-## Current scope
+## Current status
 
-This repository contains a clean starter scaffold with:
+This repository currently includes:
 
-- LangGraph workflow
-- Agent classes
-- Model router
-- Codex provider wrapper
-- Local provider (defaut local model: qwen2.5-coder:7b )
-- Tool layer
-- Streamlit UI
-- Unit tests
+- working LangGraph workflow
+- working agent structure
+- model router
+- Codex provider
+- local Ollama provider
+- Streamlit chat UI
+- LangGraph Studio support
+- local setup script for the model
+- unit tests
 
 ![alt text](image-3.png)
+
+## Human-in-the-Loop
+
+This project uses a hard approval gate:
+
+- no development without approval
+- no testing without approval
+
+The current UI already supports:
+- chat-based task input
+- plan generation
+- Approve / Reject / Cancel flow
+- workflow result display
+
+## Local provider
+
+The local provider uses **Ollama**.
+
+Current default local model:
+- `qwen2.5-coder:7b`
+
+Important:
+the current local provider is **generation-only**.
+
+That means:
+- it can return implementation guidance
+- it can suggest file changes
+- it can return code output
+
+But:
+- it does **not yet apply file changes automatically**
 
 ## Project structure
 
@@ -65,221 +112,79 @@ ai-dev-squad/
 ├── .env.example
 ├── langgraph.json
 ├── app/
-│   ├── __init__.py
-│   ├── main.py
-│   ├── config/
-│   │   ├── __init__.py
-│   │   ├── settings.py
-│   │   └── logging_config.py
-│   ├── agents/
-│   │   ├── __init__.py
-│   │   ├── orchestrator.py
-│   │   ├── developer.py
-│   │   └── tester.py
-│   ├── graph/
-│   │   ├── __init__.py
-│   │   ├── state.py
-│   │   ├── nodes.py
-│   │   ├── edges.py
-│   │   └── workflow.py
-│   ├── models/
-│   │   ├── __init__.py
-│   │   ├── base_provider.py
-│   │   ├── model_router.py
-│   │   ├── codex_provider.py
-│   │   └── local_provider.py
-│   ├── tools/
-│   │   ├── __init__.py
-│   │   ├── codex_tool.py
-│   │   ├── test_runner.py
-│   │   ├── file_tool.py
-│   │   └── approval_tool.py
-│   ├── services/
-│   │   ├── __init__.py
-│   │   ├── task_service.py
-│   │   └── execution_service.py
-│   ├── prompts/
-│   │   ├── orchestrator_prompt.txt
-│   │   ├── developer_prompt.txt
-│   │   └── tester_prompt.txt
-│   └── ui/
-│       ├── __init__.py
-│       ├── streamlit_app.py
-│       └── components.py
 ├── tests/
-│   ├── __init__.py
-│   ├── test_orchestrator.py
-│   ├── test_developer.py
-│   ├── test_tester.py
-│   ├── test_model_router.py
-│   └── test_workflow.py
 ├── docs/
-│   ├── architecture.md
-│   ├── flow.md
-│   ├── folder-structure.md
-│   └── roadmap.md
 └── scripts/
-    ├── run_local.py
-    ├── run_streamlit.py
-    └── demo_task.py
 ```
 
-## Folder descriptions
+### Main folders
 
-### `app/`
-Main application package.
-
-### `app/config/`
-Configuration and logging setup.
-
-### `app/agents/`
-Agent logic for Orchestrator, Developer, and Tester.
-
-### `app/graph/`
-LangGraph state, nodes, edge routing, and workflow creation.
-
-### `app/models/`
-Model provider interface, router, Codex provider, and local model placeholder.
-
-### `app/tools/`
-Low-level tool wrappers for approvals, file actions, Codex execution, and test execution.
-
-### `app/services/`
-Small helper services to keep the agent files clean.
-
-### `app/prompts/`
-Prompt templates. These are simple text files now, but they give you a clean place to keep agent instructions.
-
-### `app/ui/`
-Future Streamlit UI layer. It is included in the project, but not active yet.
-
-### `tests/`
-Unit tests for the main flow and components.
-
-### `docs/`
-Extra documentation for architecture, flow, roadmap, and folder descriptions.
-
-### `scripts/`
-Convenience scripts for local runs.
-
-## How the model routing works
-
-The Developer Agent never talks directly to a specific provider.  
-Instead it calls the **Model Router**.
-
-This keeps the design clean:
-
-- `CodexProvider` is the default provider
-- `LocalProvider` is the offline placeholder
-- You can add new providers later without changing the graph flow
-
-## Default provider
-
-The default provider is **Codex**.
-
-The Codex provider assumes:
-- Codex CLI is installed
-- You are already signed in
-- The `codex` command is available on your machine
-
-If not, the provider returns a safe error message instead of changing files.
-
-## Local model placeholder
-
-The project also includes a local provider placeholder.  
-The code comments mention a future option such as:
-
-- `qwen2.5-coder:7b` via Ollama
-
-This provider is intentionally simple for now. It is here to make the switch easy later.
-
-## Human-in-the-Loop
-
-This project is designed with a hard approval gate:
-
-- no development step without approval
-- no test step without approval
-
-For now the approval value is passed in state.  
-Later the Streamlit UI can collect it from the user.
+- `app/` → main application code
+- `app/agents/` → Orchestrator, Developer, Tester
+- `app/graph/` → LangGraph workflow, state, nodes, edges
+- `app/models/` → model providers and router
+- `app/tools/` → low-level execution helpers
+- `app/ui/` → Streamlit UI
+- `tests/` → test suite
+- `docs/` → extra project docs
+- `scripts/` → local run and setup scripts
 
 ## Run locally
 
-### 1. Open the project folder
+### 1. Open the project
 
 ```bash
 cd ai-dev-squad
 ```
 
-### 2. Create a virtual environment
+### 2. Create and activate a virtual environment
 
 ```bash
 python3 -m venv .venv
-```
-
-### 3. Activate the virtual environment
-
-```bash
 source .venv/bin/activate
 ```
 
-### 4. Install packages
+### 3. Install dependencies
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### 5. Copy the environment file
+### 4. Copy the environment file
 
 ```bash
 cp .env.example .env
 ```
 
-### 6. Check Codex CLI login
-
-```bash
-codex login status
-```
-
-Expected result:
-
-```text
-Logged in using ChatGPT
-```
-
-### 7. Review the `.env` file
-
-Example values:
-
-```env
-APP_ENV=local
-APP_NAME=AI Dev Squad
-DEFAULT_MODEL_PROVIDER=codex
-CODEX_CLI_COMMAND=codex
-LOCAL_MODEL_NAME=qwen2.5-coder:7b
-DEFAULT_TEST_COMMAND=pytest -q
-ENABLE_MOCK_TOOLS=false
-```
-
-### 8. Run the local workflow
+### 5. Run the project locally
 
 ```bash
 python3 scripts/run_local.py
 ```
 
-This will:
-- build the workflow state
-- run the Orchestrator
-- run approval logic
-- call the Developer Agent
-- call the Tester Agent
-- print the result in the console
-
-### 9. Run tests for the project
+### 6. Run tests
 
 ```bash
 pytest
 ```
+
+## Run the Streamlit UI
+
+```bash
+streamlit run app/ui/streamlit_app.py
+```
+
+## Set up the local model
+
+```bash
+chmod +x scripts/setup_local_model.sh
+./scripts/setup_local_model.sh
+```
+
+This prepares:
+- Ollama
+- `qwen2.5-coder:7b`
+- local API access for the local provider
 
 ## Run with LangGraph Studio
 
@@ -296,79 +201,28 @@ LANGSMITH_API_KEY=your_pat_token_here
 LANGSMITH_TRACING=true
 ```
 
-If preferred, tracing can also be turned off:
-
-```env
-LANGSMITH_TRACING=false
-```
-
-### 3. Check `langgraph.json`
-
-Example:
-
-```json
-{
-  "dependencies": ["."],
-  "graphs": {
-    "agent": "./app/graph/workflow.py:graph"
-  },
-  "env": ".env"
-}
-```
----
-### 4. Start the local LangGraph server
+### 3. Start LangGraph locally
 
 ```bash
 langgraph dev
 ```
 
-Expected output includes:
-- local API URL
-- Studio UI URL
-- API docs URL
-
-### 5. Open Studio
-
-Open the Studio URL shown in the terminal, for example:
-
-```text
-https://smith.langchain.com/studio/?baseUrl=http://127.0.0.1:2024
-```
-
-### 6. Inspect the workflow
-
-In Studio you can:
-- view the graph
-- run the flow
-- inspect node state
-- inspect messages
-- inspect approval status
-- inspect development and test results
-
----
-## Streamlit UI
-
-The Streamlit UI files are included but not active yet.
-
-When you want to explore them later:
-
-```bash
-streamlit run app/ui/streamlit_app.py
-```
+Then open the Studio URL shown in the terminal.
 
 ## Notes
 
-- This scaffold is intentionally simple
-- Real Codex use depends on local CLI setup
-- The local model path is a placeholder for the next phase
-- LangGraph Studio is useful for graph debugging and state inspection
-- Streamlit will be better later for the real user-facing approval flow
+- Codex is currently the best path for real file changes
+- the local provider is currently generation-only
+- Streamlit is the current user-facing control layer
+- LangGraph Studio is useful for debugging and state inspection
+- ChatGPT + MCP is planned for a later phase
 
 ## Next steps
 
-1. Add real approval capture from Streamlit
-2. Improve task-aware test logic
-3. Add richer result and history tracking
-4. Add a real local model provider
-5. Add ChatGPT + MCP integration later
-This repository is under active development, and the docs will continue to evolve with each iteration.
+1. improve the local provider so it can safely apply file changes
+2. move from simple approval to richer Plan and Act flow
+3. show planned file changes before execution
+4. add final task-completion report cards in the UI
+5. add ChatGPT + MCP integration later
+
+AI Dev Squad is under active development, and the documentation will continue to evolve with the project.

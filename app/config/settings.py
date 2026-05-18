@@ -6,7 +6,7 @@ does not need to read environment variables directly.
 Why this module exists:
 - keeps environment variable handling in one place
 - provides typed settings for the rest of the application
-- allows safe defaults for local MVP development
+- allows safe defaults for local development
 - ignores unrelated environment variables, such as LangSmith settings
 """
 
@@ -38,9 +38,19 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    # General application settings.
+    # -------------------------------------------------------------------------
+    # General application settings
+    # -------------------------------------------------------------------------
+
+    # Environment name, for example local/dev/test.
     app_env: str = Field(default="local", alias="APP_ENV")
+
+    # Human-readable application name.
     app_name: str = Field(default="AI Dev Squad", alias="APP_NAME")
+
+    # -------------------------------------------------------------------------
+    # Model provider settings
+    # -------------------------------------------------------------------------
 
     # Default model provider used by the model router.
     # Supported providers currently include:
@@ -51,19 +61,31 @@ class Settings(BaseSettings):
         alias="DEFAULT_MODEL_PROVIDER",
     )
 
-    # Local Codex CLI command name.
+    # Codex CLI command name.
     # The default assumes `codex` is available on PATH.
     codex_cli_command: str = Field(
         default="codex",
         alias="CODEX_CLI_COMMAND",
     )
 
-    # Placeholder local model name for future offline mode.
-    # Example target later: Ollama or another local model runtime.
+    # Local model name for the offline/local provider.
+    # Example:
+    # qwen2.5-coder:7b
     local_model_name: str = Field(
         default="qwen2.5-coder:7b",
         alias="LOCAL_MODEL_NAME",
     )
+
+    # Base URL of the local Ollama runtime.
+    # The local provider uses this endpoint to call the local model.
+    ollama_base_url: str = Field(
+        default="http://localhost:11434",
+        alias="OLLAMA_BASE_URL",
+    )
+
+    # -------------------------------------------------------------------------
+    # Test and execution settings
+    # -------------------------------------------------------------------------
 
     # Default local test command used by the Tester Agent.
     default_test_command: str = Field(
