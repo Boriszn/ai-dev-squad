@@ -9,6 +9,10 @@ Why this agent exists:
 - keeps approval evaluation logic in one place
 - makes the workflow easier to read and extend later
 - prepares richer data for the Plan / Act UI flow
+
+Current planning approach:
+- first try provider-backed planning through the model router
+- if provider planning fails, fall back to a safe local default plan
 """
 
 from __future__ import annotations
@@ -17,11 +21,14 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.graph.state import WorkflowState
+from app.models.model_router import ModelRouter
 
 
 @dataclass
 class OrchestratorAgent:
     """Plan and control the high-level workflow."""
+
+    model_router: ModelRouter
 
     def create_plan(self, state: WorkflowState) -> dict[str, Any]:
         """Create a structured execution plan from the current task.
@@ -30,8 +37,15 @@ class OrchestratorAgent:
         - full plan text
         - short summary
         - numbered steps
-        - notes/warnings
-        - simple act summary
+        - file preview
+        - notes / warnings
+        - act summary
+
+        Planning logic:
+        1. validate task input
+        2. choose the provider from workflow state
+        3. ask the provider for a structured plan
+        4. if provider planning fails, fall back to a safe default plan
 
         Args:
             state: Shared workflow state.
@@ -40,8 +54,10 @@ class OrchestratorAgent:
             A partial state update with the structured plan and
             initial approval-related information.
         """
-        # Read and normalize the task text.
+        # Read and normalize core task settings from the current state.
         task = state.get("task", "").strip()
+        provider_name = state.get("provider_name", "codex")
+        repo_path = state.get("repo_path", ".")
 
         # Guard against an empty task.
         if not task:
@@ -49,6 +65,10 @@ class OrchestratorAgent:
                 "plan": "No task provided.",
                 "plan_summary": "No task provided.",
                 "plan_steps": [],
+                "planned_file_changes": {
+                    "create": [],
+                    "update": [],
+                },
                 "plan_notes": ["The task is empty."],
                 "act_summary": "",
                 "status": "failed",
@@ -59,41 +79,70 @@ class OrchestratorAgent:
                 + ["Orchestrator could not create a plan because the task is empty."],
             }
 
-        # Build a simple structured plan.
-        # This is intentionally lightweight for now. Later we can make
-        # it more dynamic and task-aware.
-        plan_summary = self._build_plan_summary(task)
-        plan_steps = self._build_plan_steps(task)
-        plan_notes = self._build_plan_notes(task)
-
-        # Keep the legacy plain-text plan too, because other parts of the app
-        # still display it.
-        plan = " ".join(f"{index + 1}. {step}" for index, step in enumerate(plan_steps))
-
-        # Short summary used later for the Act preview card.
-        act_summary = (
-            "Review the planned changes, check target files, and confirm "
-            "before development starts."
-        )
-
         # Keep any existing approval status if one was already set.
         # Otherwise default to pending.
         approval_status = state.get("approval_status", "pending")
-
         messages = list(state.get("messages", []))
-        messages.append(f"Orchestrator created a plan for task: {task}")
+
+        # First try provider-backed planning.
+        provider_plan = self._try_provider_plan(
+            task=task,
+            repo_path=repo_path,
+            provider_name=provider_name,
+        )
+
+        if provider_plan["success"]:
+            plan_steps = provider_plan["plan_steps"]
+            plan = self._build_plain_plan_text(plan_steps)
+
+            messages.append(
+                f"Orchestrator created a provider-backed plan using: {provider_name}"
+            )
+
+            return {
+                "plan": plan,
+                "plan_summary": provider_plan["plan_summary"],
+                "plan_steps": plan_steps,
+                "planned_file_changes": provider_plan["planned_file_changes"],
+                "plan_notes": provider_plan["plan_notes"],
+                "act_summary": provider_plan["act_summary"],
+                "phase": "plan",
+                "status": "planned",
+                "approval_status": approval_status,
+                "approval_required": True,
+                "provider_name": provider_name,
+                "repo_path": repo_path,
+                "total_steps": len(plan_steps),
+                "current_step_index": 0,
+                "current_step": "",
+                "messages": messages,
+            }
+
+        # Fallback path:
+        # if provider planning fails, create a safe local default plan so the
+        # UI still works and the user is not blocked.
+        fallback_plan = self._build_fallback_plan(task=task)
+
+        messages.append(
+            f"Provider-backed planning failed for {provider_name}. "
+            "Used fallback plan instead."
+        )
+        messages.append(provider_plan["summary"])
 
         return {
-            "plan": plan,
-            "plan_summary": plan_summary,
-            "plan_steps": plan_steps,
-            "plan_notes": plan_notes,
-            "act_summary": act_summary,
+            "plan": self._build_plain_plan_text(fallback_plan["plan_steps"]),
+            "plan_summary": fallback_plan["plan_summary"],
+            "plan_steps": fallback_plan["plan_steps"],
+            "planned_file_changes": fallback_plan["planned_file_changes"],
+            "plan_notes": fallback_plan["plan_notes"],
+            "act_summary": fallback_plan["act_summary"],
             "phase": "plan",
             "status": "planned",
             "approval_status": approval_status,
             "approval_required": True,
-            "total_steps": len(plan_steps),
+            "provider_name": provider_name,
+            "repo_path": repo_path,
+            "total_steps": len(fallback_plan["plan_steps"]),
             "current_step_index": 0,
             "current_step": "",
             "messages": messages,
@@ -109,11 +158,9 @@ class OrchestratorAgent:
             A partial state update that says whether the workflow
             is approved, rejected, or still waiting.
         """
-        # Normalize the approval value from state.
         approval_status = (state.get("approval_status") or "").lower().strip()
         messages = list(state.get("messages", []))
 
-        # Approved path: workflow can continue to development.
         if approval_status == "approved":
             messages.append("Approval granted. The workflow can continue.")
             return {
@@ -123,7 +170,6 @@ class OrchestratorAgent:
                 "messages": messages,
             }
 
-        # Rejected path: workflow should stop cleanly.
         if approval_status == "rejected":
             messages.append("Approval rejected. The workflow will stop.")
             return {
@@ -133,7 +179,6 @@ class OrchestratorAgent:
                 "messages": messages,
             }
 
-        # Default path: still waiting for a human decision.
         messages.append("Approval not granted yet. Waiting for human decision.")
         return {
             "approval_status": "pending",
@@ -142,28 +187,71 @@ class OrchestratorAgent:
             "messages": messages,
         }
 
-    def _build_plan_summary(self, task: str) -> str:
-        """Build a short summary line for the Plan card.
+    def _try_provider_plan(
+        self,
+        task: str,
+        repo_path: str,
+        provider_name: str,
+    ) -> dict[str, Any]:
+        """Try to create a plan through the selected provider.
+
+        Args:
+            task: User task text.
+            repo_path: Repository path.
+            provider_name: Selected provider name.
+
+        Returns:
+            A normalized planning result with a success flag.
+        """
+        try:
+            result = self.model_router.plan_task(
+                provider_name=provider_name,
+                task=task,
+                repo_path=repo_path,
+            )
+        except Exception as exc:
+            return {
+                "success": False,
+                "summary": f"Provider planning failed with exception: {exc}",
+                "plan_summary": "",
+                "plan_steps": [],
+                "planned_file_changes": {
+                    "create": [],
+                    "update": [],
+                },
+                "plan_notes": [],
+                "act_summary": "",
+            }
+
+        # Normalize the result so the rest of the workflow has a stable shape.
+        return {
+            "success": bool(result.get("success")),
+            "summary": str(result.get("summary", "")),
+            "plan_summary": str(result.get("plan_summary", "")),
+            "plan_steps": list(result.get("plan_steps", [])),
+            "planned_file_changes": dict(
+                result.get(
+                    "planned_file_changes",
+                    {
+                        "create": [],
+                        "update": [],
+                    },
+                )
+            ),
+            "plan_notes": list(result.get("plan_notes", [])),
+            "act_summary": str(result.get("act_summary", "")),
+        }
+
+    def _build_fallback_plan(self, task: str) -> dict[str, Any]:
+        """Build a safe fallback plan if provider planning fails.
 
         Args:
             task: User task text.
 
         Returns:
-            Short plan summary text.
+            A structured fallback planning object.
         """
-        return f"Prepare a safe implementation plan for: {task}"
-
-    def _build_plan_steps(self, task: str) -> list[str]:
-        """Build a simple numbered implementation plan.
-
-        Args:
-            task: User task text.
-
-        Returns:
-            A list of ordered plan steps.
-        """
-        # Start with a safe default flow that fits most coding tasks.
-        steps = [
+        plan_steps = [
             "Review the task and understand the requested change.",
             "Inspect the relevant project files and current structure.",
             "Prepare the implementation approach and target file updates.",
@@ -172,10 +260,10 @@ class OrchestratorAgent:
             "Return a final result summary.",
         ]
 
-        # Keep the first version simple, but slightly adapt docs-only tasks.
         task_lower = task.lower()
+
         if any(keyword in task_lower for keyword in ["readme", "docs", "documentation", ".md"]):
-            steps = [
+            plan_steps = [
                 "Review the documentation task and current file structure.",
                 "Identify the documentation files to update.",
                 "Prepare the content changes after approval.",
@@ -183,28 +271,41 @@ class OrchestratorAgent:
                 "Return a final result summary.",
             ]
 
-        return steps
-
-    def _build_plan_notes(self, task: str) -> list[str]:
-        """Build optional notes or warnings for the Plan card.
-
-        Args:
-            task: User task text.
-
-        Returns:
-            A list of short plan notes.
-        """
-        notes = [
+        plan_notes = [
             "Human approval is required before development starts.",
             "Keep the change focused and avoid unrelated refactoring.",
+            "This plan is a fallback because provider planning did not return a usable result.",
         ]
 
-        task_lower = task.lower()
-
         if any(keyword in task_lower for keyword in ["delete", "remove", "drop"]):
-            notes.append("Check destructive actions carefully before execution.")
+            plan_notes.append("Check destructive actions carefully before execution.")
 
         if any(keyword in task_lower for keyword in ["test", "tests", "pytest"]):
-            notes.append("Expect validation or test execution as part of the flow.")
+            plan_notes.append("Expect validation or test execution as part of the flow.")
 
-        return notes
+        return {
+            "plan_summary": f"Prepare a safe implementation plan for: {task}",
+            "plan_steps": plan_steps,
+            "planned_file_changes": {
+                "create": [],
+                "update": [],
+            },
+            "plan_notes": plan_notes,
+            "act_summary": (
+                "Review the planned changes, check target files, and confirm "
+                "before development starts."
+            ),
+        }
+
+    def _build_plain_plan_text(self, plan_steps: list[str]) -> str:
+        """Convert plan steps into the legacy plain-text plan field.
+
+        Args:
+            plan_steps: Ordered list of plan steps.
+
+        Returns:
+            One plain string containing the numbered plan.
+        """
+        return " ".join(
+            f"{index + 1}. {step}" for index, step in enumerate(plan_steps)
+        )

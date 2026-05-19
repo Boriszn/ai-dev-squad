@@ -8,15 +8,14 @@ and offline providers.
 Current behavior:
 - Calls the local Ollama API
 - Uses the configured local model from settings
-- Uses the configured Ollama base URL from settings
+- Supports both Plan mode and Act mode
 - Returns structured output in the same general shape as other providers
 - Includes model and token usage metadata when available
 
 Important limitation:
-This first version is generation-only.
-It can produce implementation guidance or code text, but it does not
-directly apply file changes to the local repository yet. A later step
-can add a local file/tool execution layer on top of this provider.
+This first version is still generation-only.
+It can produce planning data, implementation guidance, or code text,
+but it does not directly apply file changes to the local repository yet.
 """
 
 from __future__ import annotations
@@ -32,10 +31,84 @@ from app.models.base_provider import BaseProvider
 
 @dataclass
 class LocalProvider(BaseProvider):
-    """Provider that sends coding tasks to a local Ollama model."""
+    """Provider that sends planning and coding tasks to a local Ollama model."""
 
     settings: Settings
     name: str = "local"
+
+    def plan_task(self, task: str, repo_path: str) -> dict[str, Any]:
+        """Create a structured implementation plan with the local model.
+
+        This is the local-provider version of Plan mode.
+        It returns a simple structured planning object that can be used
+        by the Orchestrator and UI before execution starts.
+
+        Args:
+            task: Natural language task from the user.
+            repo_path: Local repository path related to the task.
+
+        Returns:
+            Structured planning result dictionary.
+        """
+        model_name = self.settings.local_model_name
+        ollama_base_url = self.settings.ollama_base_url
+        chat_url = f"{ollama_base_url.rstrip('/')}/api/chat"
+
+        messages = self._build_plan_messages(task=task, repo_path=repo_path)
+
+        try:
+            payload = self._call_ollama(
+                chat_url=chat_url,
+                model_name=model_name,
+                messages=messages,
+            )
+        except error.URLError as exc:
+            return self._build_plan_error_result(
+                task=task,
+                repo_path=repo_path,
+                summary=(
+                    "Local provider could not reach the Ollama server. "
+                    "Make sure Ollama is running and the local API is available."
+                ),
+                stderr=str(exc),
+                model_name=model_name,
+            )
+        except Exception as exc:  # pragma: no cover - defensive error handling
+            return self._build_plan_error_result(
+                task=task,
+                repo_path=repo_path,
+                summary=f"Local provider planning failed with an exception: {exc}",
+                stderr=str(exc),
+                model_name=model_name,
+            )
+
+        response_text = self._extract_response_text(payload)
+        tokens_used = self._extract_tokens_used(payload)
+        parsed_plan = self._parse_plan_response(response_text=response_text, task=task)
+
+        return {
+            "success": True,
+            "summary": "Local provider planning completed successfully.",
+            "provider": self.name,
+            "task": task,
+            "repo_path": repo_path,
+            "plan_summary": parsed_plan["plan_summary"],
+            "plan_steps": parsed_plan["plan_steps"],
+            "planned_file_changes": parsed_plan["planned_file_changes"],
+            "plan_notes": parsed_plan["plan_notes"],
+            "act_summary": parsed_plan["act_summary"],
+            "stdout": response_text,
+            "stderr": "",
+            "model_status": {
+                "tool": "ollama",
+                "provider": self.name,
+                "execution_mode": "plan",
+                "model": model_name,
+                "provider_backend": "ollama",
+                "status": "completed",
+                "tokens_used": tokens_used,
+            },
+        }
 
     def run_code_task(self, task: str, repo_path: str) -> dict[str, Any]:
         """Run a coding task with a local Ollama-backed model.
@@ -57,10 +130,10 @@ class LocalProvider(BaseProvider):
         ollama_base_url = self.settings.ollama_base_url
         chat_url = f"{ollama_base_url.rstrip('/')}/api/chat"
 
-        # Build the messages for the local model call.
-        # This first version tells the model the repo path and task,
-        # but does not yet read and send real file contents.
-        messages = self._build_messages(task=task, repo_path=repo_path)
+        # Build the prompt/messages for the local model.
+        # This first version tells the model the repo path and task, but does
+        # not yet read and send real file contents from the repository.
+        messages = self._build_run_messages(task=task, repo_path=repo_path)
 
         try:
             payload = self._call_ollama(
@@ -113,8 +186,6 @@ class LocalProvider(BaseProvider):
         response_text = self._extract_response_text(payload)
         tokens_used = self._extract_tokens_used(payload)
 
-        # This first version is intentionally honest.
-        # It generates implementation output, but does not yet write files.
         summary = (
             "Local provider generated a coding response successfully. "
             "This version does not yet apply file changes automatically."
@@ -139,8 +210,42 @@ class LocalProvider(BaseProvider):
             },
         }
 
-    def _build_messages(self, task: str, repo_path: str) -> list[dict[str, str]]:
-        """Build chat messages for the local model call.
+    def _build_plan_messages(self, task: str, repo_path: str) -> list[dict[str, str]]:
+        """Build chat messages for Plan mode.
+
+        Args:
+            task: Natural language task.
+            repo_path: Local repository path.
+
+        Returns:
+            A message list formatted for the Ollama chat API.
+        """
+        system_prompt = (
+            "You are a local coding assistant for AI Dev Squad. "
+            "You are in Plan mode. "
+            "Create a practical implementation plan only. "
+            "Do not execute changes. "
+            "Keep the plan short, structured, and realistic."
+        )
+
+        user_prompt = (
+            f"Repository path: {repo_path}\n"
+            f"Task: {task}\n\n"
+            "Return a short planning response that includes:\n"
+            "1. short plan summary\n"
+            "2. implementation steps\n"
+            "3. likely files to create\n"
+            "4. likely files to update\n"
+            "5. short notes\n"
+        )
+
+        return [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+
+    def _build_run_messages(self, task: str, repo_path: str) -> list[dict[str, str]]:
+        """Build chat messages for Act mode.
 
         Args:
             task: Natural language coding task.
@@ -236,12 +341,6 @@ class LocalProvider(BaseProvider):
     def _extract_tokens_used(self, payload: dict[str, Any]) -> int | None:
         """Extract total token usage from the Ollama response if available.
 
-        Ollama responses usually expose:
-        - prompt_eval_count
-        - eval_count
-
-        This method combines them into a simple total token count.
-
         Args:
             payload: Parsed JSON response from Ollama.
 
@@ -255,3 +354,81 @@ class LocalProvider(BaseProvider):
             return prompt_eval_count + eval_count
 
         return None
+
+    def _parse_plan_response(self, response_text: str, task: str) -> dict[str, Any]:
+        """Convert plain model output into a simple structured plan.
+
+        Args:
+            response_text: Raw text returned by the local model.
+            task: Original user task.
+
+        Returns:
+            A simple structured plan object.
+        """
+        # Keep this first version simple and safe.
+        # We use the model text as notes, but still return a stable structure.
+        return {
+            "plan_summary": f"Prepare a safe local-model plan for: {task}",
+            "plan_steps": [
+                "Review the task.",
+                "Inspect likely files related to the change.",
+                "Prepare the implementation approach.",
+                "Return suggested changes before execution.",
+            ],
+            "planned_file_changes": {
+                "create": [],
+                "update": [],
+            },
+            "plan_notes": [
+                "Local provider planning is currently simple and may need refinement.",
+                "Model raw planning output is available in stdout if needed.",
+            ],
+            "act_summary": "Review the plan and confirm before execution starts.",
+        }
+
+    def _build_plan_error_result(
+        self,
+        task: str,
+        repo_path: str,
+        summary: str,
+        stderr: str,
+        model_name: str,
+    ) -> dict[str, Any]:
+        """Build a consistent planning error result.
+
+        Args:
+            task: User task.
+            repo_path: Repository path.
+            summary: Short summary of the failure.
+            stderr: Error text.
+            model_name: Configured local model name.
+
+        Returns:
+            Structured planning error result.
+        """
+        return {
+            "success": False,
+            "summary": summary,
+            "provider": self.name,
+            "task": task,
+            "repo_path": repo_path,
+            "plan_summary": "Planning failed.",
+            "plan_steps": [],
+            "planned_file_changes": {
+                "create": [],
+                "update": [],
+            },
+            "plan_notes": [summary],
+            "act_summary": "",
+            "stdout": "",
+            "stderr": stderr,
+            "model_status": {
+                "tool": "ollama",
+                "provider": self.name,
+                "execution_mode": "plan",
+                "model": model_name,
+                "provider_backend": "ollama",
+                "status": "failed",
+                "tokens_used": None,
+            },
+        }

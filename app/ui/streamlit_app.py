@@ -6,6 +6,7 @@ AI Dev Squad workflow without using LangGraph Studio.
 Current goals:
 - accept a user task through chat input
 - generate a structured plan first
+- keep chat enabled while the user refines the plan
 - show an Act preview before execution
 - ask for human confirmation with buttons
 - run the workflow only after confirmation
@@ -41,6 +42,9 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from app.agents.orchestrator import OrchestratorAgent
 from app.config.settings import Settings, get_settings
+from app.models.codex_provider import CodexProvider
+from app.models.local_provider import LocalProvider
+from app.models.model_router import ModelRouter
 from app.services.execution_service import run_workflow
 from app.services.task_service import build_initial_state
 from app.ui.components import (
@@ -132,6 +136,24 @@ def clear_pending_request() -> None:
     st.session_state.pending_request = None
 
 
+def build_model_router(settings: Settings) -> ModelRouter:
+    """Build the model router used by the UI planning path.
+
+    Args:
+        settings: Application settings.
+
+    Returns:
+        Configured model router.
+    """
+    return ModelRouter(
+        providers={
+            "codex": CodexProvider(settings=settings),
+            "local": LocalProvider(settings=settings),
+        },
+        default_provider_name=settings.default_model_provider,
+    )
+
+
 def build_plan_preview(
     task: str,
     repo_path: str,
@@ -152,7 +174,9 @@ def build_plan_preview(
     Returns:
         A structured plan preview dictionary.
     """
-    orchestrator = OrchestratorAgent()
+    settings = get_settings()
+    model_router = build_model_router(settings=settings)
+    orchestrator = OrchestratorAgent(model_router=model_router)
 
     state = build_initial_state(
         task=task,
@@ -205,20 +229,16 @@ def infer_planned_file_changes(task: str) -> dict[str, list[str]]:
     create_files: list[str] = []
     update_files: list[str] = []
 
-    # Simple API/endpoint heuristics.
     if any(keyword in task_lower for keyword in ["endpoint", "api", "/health", "route", "fastapi", "flask"]):
         update_files.append("app.py")
         create_files.append("tests/test_health.py")
 
-    # Docs-related heuristics.
     if any(keyword in task_lower for keyword in ["readme", "docs", "documentation", ".md"]):
         update_files.append("README.md")
 
-    # Test-related heuristics.
     if any(keyword in task_lower for keyword in ["test", "tests", "pytest"]) and "tests/test_health.py" not in create_files:
         create_files.append("tests/test_feature.py")
 
-    # Generic code change fallback if nothing matched.
     if not create_files and not update_files:
         update_files.append("app/main.py")
         create_files.append("tests/test_feature.py")
@@ -313,6 +333,119 @@ def build_progress_snapshot(
     }
 
 
+def append_refinement_to_task(existing_task: str, refinement_text: str) -> str:
+    """Append a follow-up instruction to the current pending task.
+
+    Args:
+        existing_task: Current main task text.
+        refinement_text: New follow-up user message.
+
+    Returns:
+        Combined task text used to rebuild the plan.
+    """
+    normalized_existing = existing_task.strip()
+    normalized_refinement = refinement_text.strip()
+
+    if not normalized_existing:
+        return normalized_refinement
+
+    if not normalized_refinement:
+        return normalized_existing
+
+    return (
+        f"{normalized_existing}\n\n"
+        f"Additional instruction:\n{normalized_refinement}"
+    )
+
+
+def refresh_pending_request_from_refinement(refinement_text: str) -> None:
+    """Treat a new chat message as a refinement of the current pending request.
+
+    This is the key change for the simpler Cline-like UX:
+    - chat stays enabled during Plan and Act Preview
+    - user can continue discussing the task
+    - the latest message refines the same pending request
+    - the plan is rebuilt instead of starting a separate blocked flow
+
+    Args:
+        refinement_text: New user instruction added during the current flow.
+    """
+    pending_request = st.session_state.pending_request
+    if not pending_request:
+        return
+
+    request_stage = pending_request.get("stage", "plan")
+    repo_path = pending_request["repo_path"]
+    provider_name = pending_request["provider_name"]
+    approval_note = pending_request["approval_note"]
+    current_task = pending_request["task"]
+
+    updated_task = append_refinement_to_task(
+        existing_task=current_task,
+        refinement_text=refinement_text,
+    )
+
+    add_user_message(refinement_text)
+
+    with st.spinner("Updating plan..."):
+        updated_plan_preview = build_plan_preview(
+            task=updated_task,
+            repo_path=repo_path,
+            provider_name=provider_name,
+            approval_note=approval_note,
+        )
+
+        updated_act_preview = None
+        if request_stage == "act_preview":
+            updated_act_preview = build_act_preview(
+                task=updated_task,
+                repo_path=repo_path,
+                provider_name=provider_name,
+                approval_note=approval_note,
+                plan_preview=updated_plan_preview,
+            )
+
+    pending_request["task"] = updated_task
+    pending_request["plan_preview"] = updated_plan_preview
+    pending_request["act_preview"] = updated_act_preview
+
+    if request_stage == "act_preview":
+        add_assistant_message(
+            content="I updated the plan and refreshed the Act preview with your latest instruction.",
+            kind="plan",
+            data=updated_plan_preview,
+        )
+        add_assistant_message(
+            content="Here is the refreshed Act preview.",
+            kind="act_preview",
+            data=updated_act_preview,
+        )
+
+        update_sidebar_run_snapshot(
+            {
+                "status": updated_act_preview.get("status", "act_preview_ready"),
+                "provider_name": provider_name,
+                "model_status": {},
+            }
+        )
+    else:
+        add_assistant_message(
+            content="I updated the plan with your latest instruction.",
+            kind="plan",
+            data=updated_plan_preview,
+        )
+
+        update_sidebar_run_snapshot(
+            {
+                "status": updated_plan_preview.get("status", "waiting_for_action"),
+                "provider_name": provider_name,
+                "model_status": {},
+            }
+        )
+
+    st.session_state.pending_request = pending_request
+
+
 def execute_approved_workflow(
     task: str,
     repo_path: str,
@@ -373,8 +506,6 @@ def render_sidebar(settings: Settings) -> None:
             help="Default coding provider for the Developer Agent.",
         )
 
-        # Keep the sidebar progress snapshot aligned with the currently selected
-        # provider while no workflow is active yet.
         if st.session_state.sidebar_run_snapshot.get("status") == "idle":
             update_sidebar_run_snapshot(
                 {
@@ -382,7 +513,6 @@ def render_sidebar(settings: Settings) -> None:
                 }
             )
 
-        # Show provider-specific details to make local provider behavior clearer.
         if st.session_state.sidebar_provider_name == "local":
             st.info(
                 "Local provider is active. "
@@ -419,24 +549,24 @@ def render_chat_history() -> None:
         render_chat_message(message=message, index=index)
 
 
-def handle_new_task(task_text: str) -> None:
-    """Handle a new user task from the chat input.
+def start_new_pending_request(
+    task_text: str,
+    repo_path: str,
+    provider_name: str,
+    approval_note: str,
+) -> None:
+    """Start a brand new pending Plan / Act request.
 
     Args:
-        task_text: Raw task text entered by the user.
+        task_text: First task message.
+        repo_path: Target repository path.
+        provider_name: Selected provider name.
+        approval_note: Optional approval note.
     """
-    normalized_task = task_text.strip()
-    if not normalized_task:
-        return
-
-    repo_path = st.session_state.sidebar_repo_path.strip() or "."
-    provider_name = st.session_state.sidebar_provider_name.strip().lower()
-    approval_note = st.session_state.sidebar_approval_note.strip()
-
     st.session_state.request_counter += 1
     request_id = f"request_{st.session_state.request_counter}"
 
-    add_user_message(normalized_task)
+    add_user_message(task_text)
 
     with st.spinner("Creating plan..."):
         update_sidebar_run_snapshot(
@@ -447,7 +577,7 @@ def handle_new_task(task_text: str) -> None:
             }
         )
         plan_preview = build_plan_preview(
-            task=normalized_task,
+            task=task_text,
             repo_path=repo_path,
             provider_name=provider_name,
             approval_note=approval_note,
@@ -470,13 +600,47 @@ def handle_new_task(task_text: str) -> None:
     st.session_state.pending_request = {
         "request_id": request_id,
         "stage": "plan",
-        "task": normalized_task,
+        "task": task_text,
         "repo_path": repo_path,
         "provider_name": provider_name,
         "approval_note": approval_note,
         "plan_preview": plan_preview,
         "act_preview": None,
     }
+
+
+def handle_user_prompt(task_text: str) -> None:
+    """Handle a new user prompt.
+
+    Behavior:
+    - no pending request -> start a new request
+    - pending request in plan/act_preview -> refine the current request
+    - pending request in running -> ignore, because input should be disabled
+
+    Args:
+        task_text: Raw user input from chat.
+    """
+    normalized_task = task_text.strip()
+    if not normalized_task:
+        return
+
+    repo_path = st.session_state.sidebar_repo_path.strip() or "."
+    provider_name = st.session_state.sidebar_provider_name.strip().lower()
+    approval_note = st.session_state.sidebar_approval_note.strip()
+
+    pending_request = st.session_state.pending_request
+    if not pending_request:
+        start_new_pending_request(
+            task_text=normalized_task,
+            repo_path=repo_path,
+            provider_name=provider_name,
+            approval_note=approval_note,
+        )
+        return
+
+    request_stage = pending_request.get("stage", "plan")
+    if request_stage in {"plan", "act_preview"}:
+        refresh_pending_request_from_refinement(normalized_task)
 
 
 def handle_pending_action(action: str) -> None:
@@ -500,7 +664,6 @@ def handle_pending_action(action: str) -> None:
     provider_name = pending_request["provider_name"]
     approval_note = pending_request["approval_note"]
     plan_preview = pending_request.get("plan_preview") or {}
-    act_preview = pending_request.get("act_preview") or {}
 
     # ---------------------------------------------------------------------
     # Stage 1: Plan
@@ -563,7 +726,7 @@ def handle_pending_action(action: str) -> None:
     # ---------------------------------------------------------------------
     if request_stage == "act_preview":
         if action == "back":
-            add_assistant_message("Back to the plan. Review it again before moving to Act.")
+            add_assistant_message("Back to the plan. You can continue refining it in chat.")
             update_sidebar_run_snapshot(
                 {
                     "status": "waiting_for_action",
@@ -600,6 +763,9 @@ def handle_pending_action(action: str) -> None:
                 kind="progress",
                 data=progress_data,
             )
+
+            pending_request["stage"] = "running"
+            st.session_state.pending_request = pending_request
 
             update_sidebar_run_snapshot(
                 {
@@ -665,18 +831,19 @@ Use this chat to ask for code changes or updates.
 How it works:
 1. You ask for a change
 2. The Orchestrator creates a plan
-3. You move from Plan to Act
-4. You confirm changes
-5. The workflow runs and returns the result
+3. You can refine the plan in chat
+4. You move from Plan to Act
+5. You confirm changes
+6. The workflow runs and returns the result
 """
     )
 
     render_chat_history()
 
     pending_request = st.session_state.pending_request
-    if pending_request:
-        request_stage = pending_request.get("stage", "plan")
+    request_stage = pending_request.get("stage") if pending_request else None
 
+    if pending_request:
         if request_stage == "plan":
             action = render_plan_action_bar(request_id=pending_request["request_id"])
             if action:
@@ -687,9 +854,11 @@ How it works:
             if action:
                 handle_pending_action(action)
 
-    prompt_disabled = pending_request is not None
+    # Chat should stay enabled while the user is still refining the plan.
+    # Only disable it while a confirmed execution is running.
+    prompt_disabled = request_stage == "running"
     prompt_placeholder = (
-        "Finish the pending Plan / Act flow first..."
+        "Execution is running..."
         if prompt_disabled
         else "Ask AI Dev Squad to create or update something..."
     )
@@ -700,7 +869,7 @@ How it works:
     )
 
     if user_prompt:
-        handle_new_task(user_prompt)
+        handle_user_prompt(user_prompt)
         st.rerun()
 
 

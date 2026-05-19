@@ -65,13 +65,11 @@ def build_workflow(settings: Settings):
     Returns:
         A compiled LangGraph workflow object.
     """
-    # Create the Orchestrator Agent.
-    # This agent plans the work and controls the approval phase.
-    orchestrator = OrchestratorAgent()
-
-    # Create the model router used by the Developer Agent.
+    # Create the model router used by both the Orchestrator Agent and
+    # the Developer Agent.
+    #
     # Supported providers:
-    # - codex: online/local coding via Codex CLI
+    # - codex: coding through Codex CLI
     # - local: Ollama-backed local model provider
     model_router = ModelRouter(
         providers={
@@ -80,6 +78,10 @@ def build_workflow(settings: Settings):
         },
         default_provider_name=settings.default_model_provider,
     )
+
+    # Create the Orchestrator Agent.
+    # This agent plans the work and controls the approval phase.
+    orchestrator = OrchestratorAgent(model_router=model_router)
 
     # Create the Developer Agent.
     # It uses the model router to choose the coding provider.

@@ -7,8 +7,8 @@ Design goals:
 - simple chat-style layout
 - reusable rendering helpers
 - safe handling of missing workflow fields
-- clear display of plan, preview, progress, and final results
-- support for the richer Plan / Act flow
+- compact display of plan, preview, progress, and final results
+- lighter UI closer to the Cline-style flow
 """
 
 from __future__ import annotations
@@ -21,32 +21,27 @@ import streamlit as st
 def map_status_to_progress(status: str) -> tuple[float, str]:
     """Map workflow status to sidebar progress value and label.
 
-    Progress model uses these steps:
-    - Planning
-    - Waiting for approval
-    - Developing
-    - Testing
-    - Finished
-
     Args:
         status: Current workflow status string.
 
     Returns:
-        Tuple of (progress_ratio, label).
+        Tuple of:
+        - progress ratio between 0.0 and 1.0
+        - short human-readable label
     """
     normalized = (status or "").strip().lower()
 
     if not normalized or normalized == "idle":
-        return (0.0, "Idle (no run yet)")
+        return (0.0, "Idle")
 
     if normalized in {"created", "planned", "planning"}:
         return (0.2, "Planning")
 
     if normalized in {"waiting_for_approval", "waiting_for_action", "pending"}:
-        return (0.4, "Waiting for approval")
+        return (0.4, "Waiting")
 
     if normalized in {"approved", "act_preview_ready", "developing"}:
-        return (0.6, "Developing")
+        return (0.6, "Acting")
 
     if normalized in {"developed", "testing", "tested"}:
         return (0.8, "Testing")
@@ -60,7 +55,7 @@ def map_status_to_progress(status: str) -> tuple[float, str]:
     if normalized in {"development_failed", "test_failed", "failed", "timeout"}:
         return (0.8, f"Stopped: {normalized}")
 
-    return (0.0, f"Status: {normalized}")
+    return (0.0, normalized)
 
 
 def render_sidebar_progress_panel(run_snapshot: dict[str, Any]) -> None:
@@ -82,15 +77,19 @@ def render_sidebar_progress_panel(run_snapshot: dict[str, Any]) -> None:
 
     st.subheader("Usage")
     if isinstance(tokens_used, int):
-        st.write(f"Tokens used in this run: {tokens_used}")
+        st.write(f"Tokens used: {tokens_used}")
     else:
         st.write("Tokens used: not available")
 
-    provider_name = str(model_status.get("provider") or run_snapshot.get("provider_name") or "unknown")
+    provider_name = str(
+        model_status.get("provider")
+        or run_snapshot.get("provider_name")
+        or "unknown"
+    )
     provider_backend = str(model_status.get("provider_backend") or "not available")
     model_name = str(model_status.get("model") or "not available")
 
-    st.subheader("Provider / model status")
+    st.subheader("Provider / model")
     st.write(f"Provider: {provider_name}")
     st.write(f"Backend: {provider_backend}")
     st.write(f"Model: {model_name}")
@@ -127,25 +126,26 @@ def render_chat_message(message: dict[str, Any], index: int) -> None:
             render_result_message(message=message, index=index)
             return
 
-        # Fallback for generic assistant/system-style text messages.
         st.markdown(message.get("content", ""))
 
 
 def render_plan_message(message: dict[str, Any], index: int) -> None:
-    """Render the assistant Plan card.
+    """Render a compact Plan card.
 
     Args:
         message: Assistant message containing planning data.
         index: Numeric index used to build stable Streamlit keys.
     """
+    del index  # kept for stable function signature
+
     data = message.get("data", {}) or {}
 
-    st.markdown("### Plan Created")
+    st.markdown("## Plan Created")
     st.markdown(message.get("content", "The Orchestrator prepared a plan."))
 
     task = data.get("task", "")
     if task:
-        st.markdown(f"**Task**: {task}")
+        st.markdown(f"**Task:** {task}")
 
     plan_summary = data.get("plan_summary", "")
     if plan_summary:
@@ -153,14 +153,9 @@ def render_plan_message(message: dict[str, Any], index: int) -> None:
 
     plan_steps = data.get("plan_steps", []) or []
     if plan_steps:
-        st.markdown("**Implementation steps**")
-        for item_number, item in enumerate(plan_steps, start=1):
-            st.write(f"{item_number}. {item}")
-    else:
-        # Keep backward compatibility with the older plain-text plan field.
-        plan = data.get("plan", "")
-        if plan:
-            st.info(plan)
+        st.markdown("**Implementation plan**")
+        for step_number, step in enumerate(plan_steps, start=1):
+            st.write(f"{step_number}. {step}")
 
     plan_notes = data.get("plan_notes", []) or []
     if plan_notes:
@@ -172,29 +167,25 @@ def render_plan_message(message: dict[str, Any], index: int) -> None:
     if act_summary:
         st.caption(f"Next step: {act_summary}")
 
-    _render_small_status_row(data=data)
-
-    messages = data.get("messages", []) or []
-    if messages:
-        with st.expander("Plan messages", expanded=False):
-            for item_number, item in enumerate(messages, start=1):
-                st.write(f"{item_number}. {item}")
+    _render_status_line(data=data)
 
 
 def render_act_preview_message(message: dict[str, Any], index: int) -> None:
-    """Render the assistant Act Preview card.
+    """Render a compact Act Preview card.
 
     Args:
         message: Assistant message containing act preview data.
         index: Numeric index used to build stable Streamlit keys.
     """
+    del index  # kept for stable function signature
+
     data = message.get("data", {}) or {}
 
-    st.markdown("### Act Preview")
+    st.markdown("## Act Preview")
     st.markdown(
         message.get(
             "content",
-            "Review the files that may be created or updated before execution starts.",
+            "Review the planned file changes before execution starts.",
         )
     )
 
@@ -206,37 +197,34 @@ def render_act_preview_message(message: dict[str, Any], index: int) -> None:
     create_files = planned_file_changes.get("create", []) or []
     update_files = planned_file_changes.get("update", []) or []
 
-    col1, col2 = st.columns(2)
-
-    with col1:
+    if create_files:
         st.markdown("**Files to create**")
-        if create_files:
-            for item in create_files:
-                st.write(f"- {item}")
-        else:
-            st.caption("No new files planned.")
+        for item in create_files:
+            st.write(f"- {item}")
 
-    with col2:
+    if update_files:
         st.markdown("**Files to update**")
-        if update_files:
-            for item in update_files:
-                st.write(f"- {item}")
-        else:
-            st.caption("No file updates planned.")
+        for item in update_files:
+            st.write(f"- {item}")
 
-    _render_small_status_row(data=data)
+    if not create_files and not update_files:
+        st.caption("No planned file changes yet.")
+
+    _render_status_line(data=data)
 
 
 def render_progress_message(message: dict[str, Any], index: int) -> None:
-    """Render a progress message for the running Act phase.
+    """Render a compact progress card.
 
     Args:
         message: Assistant message containing execution progress data.
         index: Numeric index used to build stable Streamlit keys.
     """
+    del index  # kept for stable function signature
+
     data = message.get("data", {}) or {}
 
-    st.markdown("### Progress")
+    st.markdown("## Progress")
     st.markdown(message.get("content", "Execution is running."))
 
     current_step = data.get("current_step", "")
@@ -249,80 +237,63 @@ def render_progress_message(message: dict[str, Any], index: int) -> None:
         st.caption(f"Step {current_step_index} of {total_steps}")
 
     if current_step:
-        st.write(f"**Current step**: {current_step}")
+        st.write(f"**Current step:** {current_step}")
 
     step_results = data.get("step_results", []) or []
     if step_results:
-        with st.expander("Step results", expanded=True):
+        with st.expander("Step details", expanded=False):
             for item_number, item in enumerate(step_results, start=1):
                 st.json({"step_number": item_number, **item})
 
-    _render_small_status_row(data=data)
+    _render_status_line(data=data)
 
 
 def render_result_message(message: dict[str, Any], index: int) -> None:
-    """Render an assistant workflow result message.
+    """Render a compact Task Completed card.
 
     Args:
         message: Assistant message containing workflow result data.
         index: Numeric index used to build stable Streamlit keys.
     """
+    del index  # kept for stable function signature
+
     data = message.get("data", {}) or {}
 
-    st.markdown("### Task Completed")
+    st.markdown("## Task Completed")
     st.markdown(message.get("content", "Workflow result"))
 
     final_summary = data.get("final_summary", "")
     if final_summary:
         st.success(final_summary)
 
-    _render_small_status_row(data=data)
-
-    repo_path = data.get("repo_path", "")
-    if repo_path:
-        st.caption(f"Repo path: {repo_path}")
+    _render_status_line(data=data)
 
     final_report = data.get("final_report", {}) or {}
-    if final_report:
-        files_changed = final_report.get("files_changed", []) or []
-        what_was_added = final_report.get("what_was_added", []) or []
-        notes = final_report.get("notes", []) or []
-        test_result_summary = final_report.get("test_result", "")
+    files_changed = final_report.get("files_changed", []) or []
+    what_was_added = final_report.get("what_was_added", []) or []
+    notes = final_report.get("notes", []) or []
+    test_result_summary = final_report.get("test_result", "")
 
-        if files_changed or what_was_added or test_result_summary or notes:
-            st.markdown("**Completion report**")
+    if files_changed:
+        st.markdown("**Files changed**")
+        for item in files_changed:
+            st.write(f"- {item}")
 
-        if files_changed:
-            with st.expander("Files changed", expanded=True):
-                for item in files_changed:
-                    st.write(f"- {item}")
+    if what_was_added:
+        st.markdown("**What was added**")
+        for item in what_was_added:
+            st.write(f"- {item}")
 
-        if what_was_added:
-            with st.expander("What was added", expanded=False):
-                for item in what_was_added:
-                    st.write(f"- {item}")
+    if test_result_summary:
+        st.markdown(f"**Test result:** {test_result_summary}")
 
-        if test_result_summary:
-            st.markdown(f"**Test result**: {test_result_summary}")
+    if notes:
+        with st.expander("Notes", expanded=False):
+            for note in notes:
+                st.write(f"- {note}")
 
-        if notes:
-            with st.expander("Notes", expanded=False):
-                for note in notes:
-                    st.write(f"- {note}")
-
-    plan = data.get("plan", "")
-    if plan:
-        with st.expander("Plan", expanded=False):
-            st.info(plan)
-
-    messages = data.get("messages", []) or []
-    if messages:
-        with st.expander("Workflow messages", expanded=True):
-            for item_number, item in enumerate(messages, start=1):
-                st.write(f"{item_number}. {item}")
-
-    render_development_result(data=data, index=index)
-    render_test_result(data=data, index=index)
+    render_development_result(data=data)
+    render_test_result(data=data)
 
     error_message = data.get("error_message", "")
     if error_message:
@@ -333,12 +304,11 @@ def render_result_message(message: dict[str, Any], index: int) -> None:
         st.json(data)
 
 
-def render_development_result(data: dict[str, Any], index: int) -> None:
+def render_development_result(data: dict[str, Any]) -> None:
     """Render development result details.
 
     Args:
         data: Workflow result dictionary.
-        index: Numeric index used to build stable Streamlit keys.
     """
     development_result = data.get("development_result")
     if not development_result:
@@ -356,27 +326,27 @@ def render_development_result(data: dict[str, Any], index: int) -> None:
     else:
         st.info(summary)
 
+    stdout_text = development_result.get("stdout", "")
+    stderr_text = development_result.get("stderr", "")
+
+    with st.expander("Developer output", expanded=False):
+        st.code(stdout_text or "No stdout output.", language="text")
+
+    if stderr_text:
+        with st.expander("Developer error output", expanded=False):
+            st.code(stderr_text, language="text")
+
     model_status = development_result.get("model_status")
     if model_status:
         with st.expander("Model status", expanded=False):
             st.json(model_status)
 
-    stdout_text = development_result.get("stdout", "")
-    stderr_text = development_result.get("stderr", "")
 
-    with st.expander("Developer stdout", expanded=False):
-        st.code(stdout_text or "No stdout output.", language="text")
-
-    with st.expander("Developer stderr", expanded=False):
-        st.code(stderr_text or "No stderr output.", language="text")
-
-
-def render_test_result(data: dict[str, Any], index: int) -> None:
+def render_test_result(data: dict[str, Any]) -> None:
     """Render test result details.
 
     Args:
         data: Workflow result dictionary.
-        index: Numeric index used to build stable Streamlit keys.
     """
     test_result = data.get("test_result")
     if not test_result:
@@ -396,16 +366,17 @@ def render_test_result(data: dict[str, Any], index: int) -> None:
 
     command = test_result.get("command", "")
     if command:
-        st.markdown(f"**Command**: `{command}`")
+        st.caption(f"Command: {command}")
 
     stdout_text = test_result.get("stdout", "")
     stderr_text = test_result.get("stderr", "")
 
-    with st.expander("Test stdout", expanded=False):
+    with st.expander("Test output", expanded=False):
         st.code(stdout_text or "No stdout output.", language="text")
 
-    with st.expander("Test stderr", expanded=False):
-        st.code(stderr_text or "No stderr output.", language="text")
+    if stderr_text:
+        with st.expander("Test error output", expanded=False):
+            st.code(stderr_text, language="text")
 
 
 def render_plan_action_bar(request_id: str) -> str | None:
@@ -422,9 +393,6 @@ def render_plan_action_bar(request_id: str) -> str | None:
         - None
     """
     with st.chat_message("assistant"):
-        st.markdown("### Waiting for your decision")
-        st.write("Review the plan above, then choose what to do next.")
-
         col1, col2, col3 = st.columns(3)
 
         act_clicked = col1.button(
@@ -468,19 +436,16 @@ def render_confirm_action_bar(request_id: str) -> str | None:
         - None
     """
     with st.chat_message("assistant"):
-        st.markdown("### Confirm changes")
-        st.write("Review the file preview above, then confirm or go back.")
-
         col1, col2, col3 = st.columns(3)
 
         confirm_clicked = col1.button(
-            "Confirm changes",
+            "Confirm",
             key=f"confirm_{request_id}",
             type="primary",
             use_container_width=True,
         )
         back_clicked = col2.button(
-            "Back to plan",
+            "Back",
             key=f"back_{request_id}",
             use_container_width=True,
         )
@@ -512,20 +477,24 @@ def render_pending_action_bar(request_id: str) -> str | None:
     return render_plan_action_bar(request_id=request_id)
 
 
-def _render_small_status_row(data: dict[str, Any]) -> None:
-    """Render a compact status row shared across multiple cards.
+def _render_status_line(data: dict[str, Any]) -> None:
+    """Render a small one-line status summary.
 
     Args:
         data: Workflow-related data dictionary.
     """
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.metric("Status", str(data.get("status", "unknown")))
-    with col2:
-        st.metric("Approval", str(data.get("approval_status", "unknown")))
-    with col3:
-        st.metric("Provider", str(data.get("provider_name", "unknown")))
+    status = str(data.get("status", "unknown"))
+    approval = str(data.get("approval_status", "unknown"))
+    provider = str(data.get("provider_name", "unknown"))
+    repo_path = str(data.get("repo_path", ""))
 
-    repo_path = data.get("repo_path", "")
+    parts = [
+        f"**Status:** {status}",
+        f"**Approval:** {approval}",
+        f"**Provider:** {provider}",
+    ]
+
     if repo_path:
-        st.caption(f"Repo path: {repo_path}")
+        parts.append(f"**Repo:** {repo_path}")
+
+    st.caption(" | ".join(parts))

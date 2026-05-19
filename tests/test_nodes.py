@@ -19,6 +19,26 @@ from app.graph.nodes import (
 from app.services.task_service import build_initial_state
 
 
+class _FakeRouter:
+    """Tiny fake router that returns a deterministic planning payload.
+
+    This keeps node tests independent from real providers while still using
+    the real `OrchestratorAgent(model_router=...)` constructor.
+    """
+
+    def plan_task(self, provider_name: str, task: str, repo_path: str) -> dict[str, object]:
+        """Return a minimal provider planning result for node tests."""
+        return {
+            "success": True,
+            "summary": "ok",
+            "plan_summary": f"Plan for: {task}",
+            "plan_steps": ["Step 1", "Step 2"],
+            "planned_file_changes": {"create": [], "update": []},
+            "plan_notes": ["Keep it focused."],
+            "act_summary": "Review and act.",
+        }
+
+
 class _DummyDeveloper:
     """Minimal developer stub used for direct node tests.
 
@@ -41,7 +61,10 @@ def test_orchestrator_plan_node_sets_waiting_for_approval_state() -> None:
     This protects the new plan-card-first workflow behavior.
     """
     state = build_initial_state(task="Add endpoint")
-    result = orchestrator_plan_node(state=state, orchestrator=OrchestratorAgent())
+    result = orchestrator_plan_node(
+        state=state,
+        orchestrator=OrchestratorAgent(model_router=_FakeRouter()),
+    )
 
     assert result["phase"] == "plan"
     assert result["status"] == "waiting_for_approval"
@@ -54,7 +77,10 @@ def test_orchestrator_plan_node_sets_waiting_for_approval_state() -> None:
 def test_approval_node_allows_approved_state() -> None:
     """Return approved branch output when approval status is approved."""
     state = build_initial_state(task="Add endpoint", approval_status="approved")
-    result = approval_node(state=state, orchestrator=OrchestratorAgent())
+    result = approval_node(
+        state=state,
+        orchestrator=OrchestratorAgent(model_router=_FakeRouter()),
+    )
 
     assert result["status"] == "approved"
     assert result["approval_status"] == "approved"
@@ -65,7 +91,10 @@ def test_approval_node_allows_approved_state() -> None:
 def test_approval_node_stops_rejected_state() -> None:
     """Return rejected branch output when approval status is rejected."""
     state = build_initial_state(task="Add endpoint", approval_status="rejected")
-    result = approval_node(state=state, orchestrator=OrchestratorAgent())
+    result = approval_node(
+        state=state,
+        orchestrator=OrchestratorAgent(model_router=_FakeRouter()),
+    )
 
     assert result["status"] == "rejected"
     assert result["approval_status"] == "rejected"
@@ -76,7 +105,10 @@ def test_approval_node_stops_rejected_state() -> None:
 def test_approval_node_keeps_pending_waiting_state() -> None:
     """Keep waiting-for-approval when no human decision exists yet."""
     state = build_initial_state(task="Add endpoint", approval_status="pending")
-    result = approval_node(state=state, orchestrator=OrchestratorAgent())
+    result = approval_node(
+        state=state,
+        orchestrator=OrchestratorAgent(model_router=_FakeRouter()),
+    )
 
     assert result["status"] == "waiting_for_approval"
     assert result["approval_status"] == "pending"
@@ -98,7 +130,11 @@ def test_developer_node_blocks_without_approval() -> None:
 
 
 def test_finalize_node_produces_final_summary_and_report() -> None:
-    """Build final summary/report payload expected by the result UI card."""
+    """Build final summary/report payload expected by the result UI card.
+
+    This also verifies that finalize appends a completion message used by
+    the chat transcript.
+    """
     state = build_initial_state(task="Add endpoint", approval_status="approved")
     state["status"] = "tested"
     state["development_result"] = {
@@ -118,3 +154,4 @@ def test_finalize_node_produces_final_summary_and_report() -> None:
     assert result["final_report"]["what_was_added"] == ["health endpoint"]
     assert result["final_report"]["test_result"] == "All tests passed."
     assert isinstance(result["final_report"]["notes"], list)
+    assert "Workflow finished." in result["messages"]

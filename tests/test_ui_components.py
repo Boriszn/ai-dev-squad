@@ -15,17 +15,21 @@ def test_map_status_to_progress_for_plan_states() -> None:
 
 
 def test_map_status_to_progress_for_waiting_approval_states() -> None:
-    """Map waiting statuses to the approval waiting bucket."""
-    assert map_status_to_progress("waiting_for_approval") == (0.4, "Waiting for approval")
-    assert map_status_to_progress("pending") == (0.4, "Waiting for approval")
+    """Map waiting statuses to the current compact waiting label.
+
+    This protects the current UI wording after the compact label refactor.
+    """
+    assert map_status_to_progress("waiting_for_approval") == (0.4, "Waiting")
+    assert map_status_to_progress("pending") == (0.4, "Waiting")
 
 
 def test_map_status_to_progress_for_developing_testing_and_finished() -> None:
-    """Map execution statuses to expected developing/testing/finished buckets."""
-    assert map_status_to_progress("approved") == (0.6, "Developing")
+    """Map execution statuses to current acting/testing/finished labels."""
+    assert map_status_to_progress("approved") == (0.6, "Acting")
     assert map_status_to_progress("developed") == (0.8, "Testing")
     assert map_status_to_progress("tested") == (0.8, "Testing")
     assert map_status_to_progress("completed") == (1.0, "Finished")
+    assert map_status_to_progress("finished") == (1.0, "Finished")
 
 
 def test_map_status_to_progress_for_rejected_and_failed_states() -> None:
