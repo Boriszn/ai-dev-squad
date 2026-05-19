@@ -7,11 +7,19 @@ Why this file matters:
 - It defines the workflow nodes and transitions
 - It exports a compiled `graph` object so LangGraph Studio can load it
 
-This version supports the Human-in-the-Loop flow more clearly:
+Current workflow shape:
 - planning always moves to approval
 - approval can continue to development
 - approval can end the workflow
-- approval can stay in the approval step while waiting
+- pending approval ends cleanly for now
+- development can continue to testing
+- testing moves to finalization
+
+Important note:
+The richer Plan / Act UI is being built step by step.
+For now, the graph still uses the simple backend flow:
+plan -> approval -> developer -> tester -> finalize
+The more advanced Act preview / confirm step will be added later.
 """
 
 from __future__ import annotations
@@ -62,8 +70,9 @@ def build_workflow(settings: Settings):
     orchestrator = OrchestratorAgent()
 
     # Create the model router used by the Developer Agent.
-    # Codex is the default provider now, and the local provider
-    # is a placeholder for future offline mode.
+    # Supported providers:
+    # - codex: online/local coding via Codex CLI
+    # - local: Ollama-backed local model provider
     model_router = ModelRouter(
         providers={
             "codex": CodexProvider(settings=settings),
@@ -118,8 +127,10 @@ def build_workflow(settings: Settings):
 
     # After approval:
     # - go to Developer if approved
-    # - end the workflow if rejected
-    # - stay on approval if still waiting
+    # - end the workflow if approval is rejected or still pending
+    #
+    # Pending approval is currently handled by the UI layer, so the graph
+    # should stop cleanly instead of looping.
     graph.add_conditional_edges(
         "approval",
         route_after_approval,

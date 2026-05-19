@@ -6,7 +6,8 @@ Right now it focuses on building the initial LangGraph state.
 Why this module exists:
 - keeps workflow bootstrap logic out of the graph files
 - creates a clean and predictable initial state
-- prepares the state for Human-in-the-Loop approval flow
+- prepares the state for the Human-in-the-Loop flow
+- prepares default fields for the Plan / Act UI flow
 """
 
 from __future__ import annotations
@@ -35,22 +36,76 @@ def build_initial_state(
         approval_note: Optional note for the approval step.
 
     Returns:
-        A workflow state dictionary with the minimum fields required
-        to start the workflow safely.
+        A workflow state dictionary with safe defaults for the current
+        Plan / Act UI flow.
     """
     # Approval is required unless the caller already explicitly approved
     # or rejected the request before the workflow starts.
     approval_required = approval_status not in {"approved", "rejected"}
 
     return WorkflowState(
+        # -----------------------------------------------------------------
+        # Core task and workflow control
+        # -----------------------------------------------------------------
         task=task,
-        plan="",
+        status="created",
+        phase="plan",
+
+        # -----------------------------------------------------------------
+        # Approval and action decisions
+        # -----------------------------------------------------------------
         approval_status=approval_status,
         approval_required=approval_required,
         approval_note=approval_note,
+        action_status="pending",
+
+        # -----------------------------------------------------------------
+        # Planning data
+        # -----------------------------------------------------------------
+        plan="",
+        plan_summary="",
+        plan_steps=[],
+        plan_notes=[],
+
+        # -----------------------------------------------------------------
+        # Act preview data
+        # -----------------------------------------------------------------
+        planned_file_changes={
+            "create": [],
+            "update": [],
+        },
+        act_summary="",
+
+        # -----------------------------------------------------------------
+        # Execution progress
+        # -----------------------------------------------------------------
+        current_step_index=0,
+        total_steps=0,
+        current_step="",
+        step_results=[],
+
+        # -----------------------------------------------------------------
+        # Runtime configuration
+        # -----------------------------------------------------------------
         repo_path=repo_path,
         provider_name=provider_name,
-        status="created",
-        messages=[],
+
+        # -----------------------------------------------------------------
+        # Execution results
+        # -----------------------------------------------------------------
+        development_result={},
+        test_result={},
         error_message="",
+        messages=[],
+
+        # -----------------------------------------------------------------
+        # Final report
+        # -----------------------------------------------------------------
+        final_summary="",
+        final_report={
+            "files_changed": [],
+            "what_was_added": [],
+            "test_result": "",
+            "notes": [],
+        },
     )

@@ -1,14 +1,14 @@
 """Chat-style UI components for AI Dev Squad.
 
-This module contains small Streamlit rendering helpers used by the
-main chat-based Streamlit app. Keeping rendering logic here makes the
-main UI file easier to read and maintain.
+This module contains Streamlit rendering helpers used by the main
+chat-based Streamlit app.
 
 Design goals:
 - simple chat-style layout
 - reusable rendering helpers
 - safe handling of missing workflow fields
-- clear display of plan, messages, development, and test results
+- clear display of plan, preview, progress, and final results
+- support for the richer Plan / Act flow
 """
 
 from __future__ import annotations
@@ -39,19 +39,19 @@ def map_status_to_progress(status: str) -> tuple[float, str]:
     if not normalized or normalized == "idle":
         return (0.0, "Idle (no run yet)")
 
-    if normalized in {"planning"}:
+    if normalized in {"created", "planned", "planning"}:
         return (0.2, "Planning")
 
-    if normalized in {"waiting_for_approval", "pending"}:
+    if normalized in {"waiting_for_approval", "waiting_for_action", "pending"}:
         return (0.4, "Waiting for approval")
 
-    if normalized in {"approved", "developing"}:
+    if normalized in {"approved", "act_preview_ready", "developing"}:
         return (0.6, "Developing")
 
     if normalized in {"developed", "testing", "tested"}:
         return (0.8, "Testing")
 
-    if normalized == "finished":
+    if normalized in {"finished", "completed"}:
         return (1.0, "Finished")
 
     if normalized in {"rejected", "cancelled"}:
@@ -64,7 +64,7 @@ def map_status_to_progress(status: str) -> tuple[float, str]:
 
 
 def render_sidebar_progress_panel(run_snapshot: dict[str, Any]) -> None:
-    """Render workflow progress and run usage details in sidebar.
+    """Render workflow progress and run usage details in the sidebar.
 
     Args:
         run_snapshot: Latest run snapshot containing status and optional
@@ -115,6 +115,14 @@ def render_chat_message(message: dict[str, Any], index: int) -> None:
             render_plan_message(message=message, index=index)
             return
 
+        if kind == "act_preview":
+            render_act_preview_message(message=message, index=index)
+            return
+
+        if kind == "progress":
+            render_progress_message(message=message, index=index)
+            return
+
         if kind == "result":
             render_result_message(message=message, index=index)
             return
@@ -124,42 +132,132 @@ def render_chat_message(message: dict[str, Any], index: int) -> None:
 
 
 def render_plan_message(message: dict[str, Any], index: int) -> None:
-    """Render an assistant plan message.
+    """Render the assistant Plan card.
 
     Args:
         message: Assistant message containing planning data.
         index: Numeric index used to build stable Streamlit keys.
     """
-    data = message.get("data", {})
+    data = message.get("data", {}) or {}
 
-    st.markdown("### Proposed plan")
+    st.markdown("### Plan Created")
     st.markdown(message.get("content", "The Orchestrator prepared a plan."))
 
     task = data.get("task", "")
     if task:
         st.markdown(f"**Task**: {task}")
 
-    plan = data.get("plan", "")
-    if plan:
-        st.info(plan)
+    plan_summary = data.get("plan_summary", "")
+    if plan_summary:
+        st.info(plan_summary)
 
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.metric("Status", str(data.get("status", "unknown")))
-    with col2:
-        st.metric("Approval", str(data.get("approval_status", "unknown")))
-    with col3:
-        st.metric("Provider", str(data.get("provider_name", "unknown")))
+    plan_steps = data.get("plan_steps", []) or []
+    if plan_steps:
+        st.markdown("**Implementation steps**")
+        for item_number, item in enumerate(plan_steps, start=1):
+            st.write(f"{item_number}. {item}")
+    else:
+        # Keep backward compatibility with the older plain-text plan field.
+        plan = data.get("plan", "")
+        if plan:
+            st.info(plan)
 
-    repo_path = data.get("repo_path", "")
-    if repo_path:
-        st.caption(f"Repo path: {repo_path}")
+    plan_notes = data.get("plan_notes", []) or []
+    if plan_notes:
+        with st.expander("Notes", expanded=False):
+            for note in plan_notes:
+                st.write(f"- {note}")
 
-    messages = data.get("messages", [])
+    act_summary = data.get("act_summary", "")
+    if act_summary:
+        st.caption(f"Next step: {act_summary}")
+
+    _render_small_status_row(data=data)
+
+    messages = data.get("messages", []) or []
     if messages:
         with st.expander("Plan messages", expanded=False):
             for item_number, item in enumerate(messages, start=1):
                 st.write(f"{item_number}. {item}")
+
+
+def render_act_preview_message(message: dict[str, Any], index: int) -> None:
+    """Render the assistant Act Preview card.
+
+    Args:
+        message: Assistant message containing act preview data.
+        index: Numeric index used to build stable Streamlit keys.
+    """
+    data = message.get("data", {}) or {}
+
+    st.markdown("### Act Preview")
+    st.markdown(
+        message.get(
+            "content",
+            "Review the files that may be created or updated before execution starts.",
+        )
+    )
+
+    act_summary = data.get("act_summary", "")
+    if act_summary:
+        st.info(act_summary)
+
+    planned_file_changes = data.get("planned_file_changes", {}) or {}
+    create_files = planned_file_changes.get("create", []) or []
+    update_files = planned_file_changes.get("update", []) or []
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.markdown("**Files to create**")
+        if create_files:
+            for item in create_files:
+                st.write(f"- {item}")
+        else:
+            st.caption("No new files planned.")
+
+    with col2:
+        st.markdown("**Files to update**")
+        if update_files:
+            for item in update_files:
+                st.write(f"- {item}")
+        else:
+            st.caption("No file updates planned.")
+
+    _render_small_status_row(data=data)
+
+
+def render_progress_message(message: dict[str, Any], index: int) -> None:
+    """Render a progress message for the running Act phase.
+
+    Args:
+        message: Assistant message containing execution progress data.
+        index: Numeric index used to build stable Streamlit keys.
+    """
+    data = message.get("data", {}) or {}
+
+    st.markdown("### Progress")
+    st.markdown(message.get("content", "Execution is running."))
+
+    current_step = data.get("current_step", "")
+    current_step_index = int(data.get("current_step_index", 0) or 0)
+    total_steps = int(data.get("total_steps", 0) or 0)
+
+    if total_steps > 0:
+        progress_ratio = min(current_step_index / total_steps, 1.0)
+        st.progress(progress_ratio)
+        st.caption(f"Step {current_step_index} of {total_steps}")
+
+    if current_step:
+        st.write(f"**Current step**: {current_step}")
+
+    step_results = data.get("step_results", []) or []
+    if step_results:
+        with st.expander("Step results", expanded=True):
+            for item_number, item in enumerate(step_results, start=1):
+                st.json({"step_number": item_number, **item})
+
+    _render_small_status_row(data=data)
 
 
 def render_result_message(message: dict[str, Any], index: int) -> None:
@@ -169,28 +267,55 @@ def render_result_message(message: dict[str, Any], index: int) -> None:
         message: Assistant message containing workflow result data.
         index: Numeric index used to build stable Streamlit keys.
     """
-    data = message.get("data", {})
+    data = message.get("data", {}) or {}
 
+    st.markdown("### Task Completed")
     st.markdown(message.get("content", "Workflow result"))
 
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.metric("Status", str(data.get("status", "unknown")))
-    with col2:
-        st.metric("Approval", str(data.get("approval_status", "unknown")))
-    with col3:
-        st.metric("Provider", str(data.get("provider_name", "unknown")))
+    final_summary = data.get("final_summary", "")
+    if final_summary:
+        st.success(final_summary)
+
+    _render_small_status_row(data=data)
 
     repo_path = data.get("repo_path", "")
     if repo_path:
         st.caption(f"Repo path: {repo_path}")
+
+    final_report = data.get("final_report", {}) or {}
+    if final_report:
+        files_changed = final_report.get("files_changed", []) or []
+        what_was_added = final_report.get("what_was_added", []) or []
+        notes = final_report.get("notes", []) or []
+        test_result_summary = final_report.get("test_result", "")
+
+        if files_changed or what_was_added or test_result_summary or notes:
+            st.markdown("**Completion report**")
+
+        if files_changed:
+            with st.expander("Files changed", expanded=True):
+                for item in files_changed:
+                    st.write(f"- {item}")
+
+        if what_was_added:
+            with st.expander("What was added", expanded=False):
+                for item in what_was_added:
+                    st.write(f"- {item}")
+
+        if test_result_summary:
+            st.markdown(f"**Test result**: {test_result_summary}")
+
+        if notes:
+            with st.expander("Notes", expanded=False):
+                for note in notes:
+                    st.write(f"- {note}")
 
     plan = data.get("plan", "")
     if plan:
         with st.expander("Plan", expanded=False):
             st.info(plan)
 
-    messages = data.get("messages", [])
+    messages = data.get("messages", []) or []
     if messages:
         with st.expander("Workflow messages", expanded=True):
             for item_number, item in enumerate(messages, start=1):
@@ -283,15 +408,15 @@ def render_test_result(data: dict[str, Any], index: int) -> None:
         st.code(stderr_text or "No stderr output.", language="text")
 
 
-def render_pending_action_bar(request_id: str) -> str | None:
-    """Render approval decision buttons for the current pending request.
+def render_plan_action_bar(request_id: str) -> str | None:
+    """Render action buttons shown after the Plan card.
 
     Args:
         request_id: Stable ID used to build unique Streamlit button keys.
 
     Returns:
         One of:
-        - "approved"
+        - "act"
         - "rejected"
         - "cancelled"
         - None
@@ -302,9 +427,9 @@ def render_pending_action_bar(request_id: str) -> str | None:
 
         col1, col2, col3 = st.columns(3)
 
-        approve_clicked = col1.button(
-            "Approve",
-            key=f"approve_{request_id}",
+        act_clicked = col1.button(
+            "Act",
+            key=f"act_{request_id}",
             type="primary",
             use_container_width=True,
         )
@@ -319,11 +444,88 @@ def render_pending_action_bar(request_id: str) -> str | None:
             use_container_width=True,
         )
 
-    if approve_clicked:
-        return "approved"
+    if act_clicked:
+        return "act"
     if reject_clicked:
         return "rejected"
     if cancel_clicked:
         return "cancelled"
 
     return None
+
+
+def render_confirm_action_bar(request_id: str) -> str | None:
+    """Render action buttons shown after the Act Preview card.
+
+    Args:
+        request_id: Stable ID used to build unique Streamlit button keys.
+
+    Returns:
+        One of:
+        - "confirm"
+        - "back"
+        - "cancelled"
+        - None
+    """
+    with st.chat_message("assistant"):
+        st.markdown("### Confirm changes")
+        st.write("Review the file preview above, then confirm or go back.")
+
+        col1, col2, col3 = st.columns(3)
+
+        confirm_clicked = col1.button(
+            "Confirm changes",
+            key=f"confirm_{request_id}",
+            type="primary",
+            use_container_width=True,
+        )
+        back_clicked = col2.button(
+            "Back to plan",
+            key=f"back_{request_id}",
+            use_container_width=True,
+        )
+        cancel_clicked = col3.button(
+            "Cancel",
+            key=f"cancel_confirm_{request_id}",
+            use_container_width=True,
+        )
+
+    if confirm_clicked:
+        return "confirm"
+    if back_clicked:
+        return "back"
+    if cancel_clicked:
+        return "cancelled"
+
+    return None
+
+
+def render_pending_action_bar(request_id: str) -> str | None:
+    """Backward-compatible wrapper for the old plan action bar.
+
+    Args:
+        request_id: Stable ID used to build unique Streamlit button keys.
+
+    Returns:
+        Same output as render_plan_action_bar().
+    """
+    return render_plan_action_bar(request_id=request_id)
+
+
+def _render_small_status_row(data: dict[str, Any]) -> None:
+    """Render a compact status row shared across multiple cards.
+
+    Args:
+        data: Workflow-related data dictionary.
+    """
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric("Status", str(data.get("status", "unknown")))
+    with col2:
+        st.metric("Approval", str(data.get("approval_status", "unknown")))
+    with col3:
+        st.metric("Provider", str(data.get("provider_name", "unknown")))
+
+    repo_path = data.get("repo_path", "")
+    if repo_path:
+        st.caption(f"Repo path: {repo_path}")

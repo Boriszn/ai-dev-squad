@@ -5,17 +5,19 @@ AI Dev Squad workflow without using LangGraph Studio.
 
 Current goals:
 - accept a user task through chat input
-- generate a plan first
-- ask for human approval with buttons
-- run the workflow only after approval
+- generate a structured plan first
+- show an Act preview before execution
+- ask for human confirmation with buttons
+- run the workflow only after confirmation
 - show final result as assistant messages
 - support both Codex and local provider selection from the UI
 
 Important note:
 The current graph does not yet use a true interrupt/resume approval flow.
-Because of that, this UI handles the approval interaction at the UI layer:
+Because of that, this UI handles the Plan / Act interaction at the UI layer:
 - first build the plan only
-- then run the full workflow when the user clicks Approve
+- then show an Act preview
+- then run the full workflow after confirmation
 
 Local provider note:
 The first local provider version is generation-only.
@@ -43,7 +45,8 @@ from app.services.execution_service import run_workflow
 from app.services.task_service import build_initial_state
 from app.ui.components import (
     render_chat_message,
-    render_pending_action_bar,
+    render_confirm_action_bar,
+    render_plan_action_bar,
     render_sidebar_progress_panel,
 )
 
@@ -111,7 +114,7 @@ def add_assistant_message(
 
     Args:
         content: Assistant message text.
-        kind: Message kind such as text, plan, or result.
+        kind: Message kind such as text, plan, act_preview, progress, or result.
         data: Optional structured data attached to the message.
     """
     st.session_state.chat_history.append(
@@ -162,11 +165,10 @@ def build_plan_preview(
     plan_result = orchestrator.create_plan(state)
 
     messages = list(plan_result.get("messages", []))
-    messages.append("Workflow is waiting for human approval.")
-    messages.append("Use Approve, Reject, or Cancel to continue.")
+    messages.append("Plan is ready.")
+    messages.append("Use Act, Reject, or Cancel to continue.")
 
-    # Add a local-provider note into the preview so the UI is clear
-    # before the user clicks Approve.
+    # Add a local-provider note so the UI is clear before execution.
     if provider_name == "local":
         messages.append(
             "Local provider is in generation-only mode. "
@@ -176,10 +178,138 @@ def build_plan_preview(
     return {
         **state,
         **plan_result,
-        "status": "waiting_for_approval",
+        "phase": "plan",
+        "status": "waiting_for_action",
         "approval_status": "pending",
         "approval_required": True,
+        "action_status": "pending",
         "messages": messages,
+    }
+
+
+def infer_planned_file_changes(task: str) -> dict[str, list[str]]:
+    """Infer a simple file preview from the task text.
+
+    This is a lightweight UI-first preview helper.
+    It does not inspect the repository yet. It only gives the user a
+    simple preview card until we introduce a real repo-aware preview step.
+
+    Args:
+        task: User task text.
+
+    Returns:
+        A dictionary with "create" and "update" file lists.
+    """
+    task_lower = task.lower()
+
+    create_files: list[str] = []
+    update_files: list[str] = []
+
+    # Simple API/endpoint heuristics.
+    if any(keyword in task_lower for keyword in ["endpoint", "api", "/health", "route", "fastapi", "flask"]):
+        update_files.append("app.py")
+        create_files.append("tests/test_health.py")
+
+    # Docs-related heuristics.
+    if any(keyword in task_lower for keyword in ["readme", "docs", "documentation", ".md"]):
+        update_files.append("README.md")
+
+    # Test-related heuristics.
+    if any(keyword in task_lower for keyword in ["test", "tests", "pytest"]) and "tests/test_health.py" not in create_files:
+        create_files.append("tests/test_feature.py")
+
+    # Generic code change fallback if nothing matched.
+    if not create_files and not update_files:
+        update_files.append("app/main.py")
+        create_files.append("tests/test_feature.py")
+
+    return {
+        "create": create_files,
+        "update": update_files,
+    }
+
+
+def build_act_preview(
+    task: str,
+    repo_path: str,
+    provider_name: str,
+    approval_note: str,
+    plan_preview: dict[str, Any],
+) -> dict[str, Any]:
+    """Build an Act preview before execution starts.
+
+    This is still a UI-layer preview for now. It prepares the card that
+    shows the likely file changes before the user confirms execution.
+
+    Args:
+        task: User task text.
+        repo_path: Target repository path.
+        provider_name: Selected provider name.
+        approval_note: Optional approval note.
+        plan_preview: Existing plan preview data.
+
+    Returns:
+        A structured act preview dictionary.
+    """
+    planned_file_changes = plan_preview.get("planned_file_changes") or infer_planned_file_changes(task)
+    messages = list(plan_preview.get("messages", []))
+
+    messages.append("Act preview is ready.")
+    messages.append("Review the planned file changes and confirm to continue.")
+
+    notes = list(plan_preview.get("plan_notes", []))
+    notes.append("File preview is currently a UI-first estimate, not a repo-aware diff yet.")
+
+    act_summary = plan_preview.get("act_summary") or (
+        "Review the target files and confirm changes before execution starts."
+    )
+
+    return {
+        **plan_preview,
+        "phase": "act_preview",
+        "status": "act_preview_ready",
+        "action_status": "act",
+        "planned_file_changes": planned_file_changes,
+        "plan_notes": notes,
+        "act_summary": act_summary,
+        "messages": messages,
+    }
+
+
+def build_progress_snapshot(
+    task: str,
+    repo_path: str,
+    provider_name: str,
+    total_steps: int,
+) -> dict[str, Any]:
+    """Build a lightweight progress payload shown before execution finishes.
+
+    Args:
+        task: User task text.
+        repo_path: Target repository path.
+        provider_name: Selected provider name.
+        total_steps: Total planned steps.
+
+    Returns:
+        A progress data dictionary for the progress card.
+    """
+    return {
+        "task": task,
+        "repo_path": repo_path,
+        "provider_name": provider_name,
+        "phase": "act",
+        "status": "developing",
+        "approval_status": "approved",
+        "current_step_index": 1,
+        "total_steps": max(total_steps, 2),
+        "current_step": "Running developer step",
+        "step_results": [
+            {
+                "step": "developer",
+                "status": "started",
+                "message": "Developer step has started.",
+            }
+        ],
     }
 
 
@@ -325,116 +455,192 @@ def handle_new_task(task_text: str) -> None:
 
     update_sidebar_run_snapshot(
         {
-            "status": plan_preview.get("status", "waiting_for_approval"),
+            "status": plan_preview.get("status", "waiting_for_action"),
             "provider_name": provider_name,
             "model_status": {},
         }
     )
 
     add_assistant_message(
-        content="I created a plan for your request. Please review and confirm.",
+        content="I created a plan for your request. Please review it before moving to Act.",
         kind="plan",
         data=plan_preview,
     )
 
     st.session_state.pending_request = {
         "request_id": request_id,
+        "stage": "plan",
         "task": normalized_task,
         "repo_path": repo_path,
         "provider_name": provider_name,
         "approval_note": approval_note,
         "plan_preview": plan_preview,
+        "act_preview": None,
     }
 
 
 def handle_pending_action(action: str) -> None:
-    """Handle approval decision for the current pending request.
+    """Handle Plan / Act decision for the current pending request.
 
     Args:
-        action: One of approved, rejected, or cancelled.
+        action: One of:
+            - act
+            - confirm
+            - back
+            - rejected
+            - cancelled
     """
     pending_request = st.session_state.pending_request
     if not pending_request:
         return
 
+    request_stage = pending_request.get("stage", "plan")
     task = pending_request["task"]
     repo_path = pending_request["repo_path"]
     provider_name = pending_request["provider_name"]
     approval_note = pending_request["approval_note"]
+    plan_preview = pending_request.get("plan_preview") or {}
+    act_preview = pending_request.get("act_preview") or {}
 
-    if action == "approved":
-        if provider_name == "local":
-            add_assistant_message(
-                "Approval received. Running local provider and tester now. "
-                "Note: local provider is currently generation-only."
-            )
-        else:
-            add_assistant_message("Approval received. Running developer and tester now.")
-
-        update_sidebar_run_snapshot(
-            {
-                "status": "developing",
-                "provider_name": provider_name,
-            }
-        )
-
-        with st.spinner("Running approved workflow..."):
-            result = execute_approved_workflow(
+    # ---------------------------------------------------------------------
+    # Stage 1: Plan
+    # ---------------------------------------------------------------------
+    if request_stage == "plan":
+        if action == "act":
+            preview = build_act_preview(
                 task=task,
                 repo_path=repo_path,
                 provider_name=provider_name,
                 approval_note=approval_note,
+                plan_preview=plan_preview,
             )
 
-        development_result = result.get("development_result", {}) or {}
-        model_status = development_result.get("model_status", {}) or {}
-
-        update_sidebar_run_snapshot(
-            {
-                "status": result.get("status", "finished"),
-                "provider_name": result.get("provider_name", provider_name),
-                "model_status": model_status,
-            }
-        )
-
-        # Add one extra explanatory message for the current local-provider mode.
-        if provider_name == "local":
             add_assistant_message(
-                "Local provider finished. This run produced coding guidance and model output. "
-                "Direct file changes are not implemented for the local provider yet."
+                "Here is the Act preview. Review the planned file changes before execution.",
+                kind="act_preview",
+                data=preview,
             )
 
-        add_assistant_message(
-            content=f"Workflow finished with status: {result.get('status', 'unknown')}.",
-            kind="result",
-            data=result,
-        )
-        clear_pending_request()
-        st.rerun()
+            update_sidebar_run_snapshot(
+                {
+                    "status": preview.get("status", "act_preview_ready"),
+                    "provider_name": provider_name,
+                    "model_status": {},
+                }
+            )
 
-    if action == "rejected":
-        add_assistant_message("Request rejected. No code changes were made.")
-        update_sidebar_run_snapshot(
-            {
-                "status": "rejected",
-                "provider_name": provider_name,
-                "model_status": {},
-            }
-        )
-        clear_pending_request()
-        st.rerun()
+            pending_request["stage"] = "act_preview"
+            pending_request["act_preview"] = preview
+            st.session_state.pending_request = pending_request
+            st.rerun()
 
-    if action == "cancelled":
-        add_assistant_message("Request cancelled. Nothing was executed.")
-        update_sidebar_run_snapshot(
-            {
-                "status": "cancelled",
-                "provider_name": provider_name,
-                "model_status": {},
-            }
-        )
-        clear_pending_request()
-        st.rerun()
+        if action == "rejected":
+            add_assistant_message("Request rejected. No code changes were made.")
+            update_sidebar_run_snapshot(
+                {
+                    "status": "rejected",
+                    "provider_name": provider_name,
+                    "model_status": {},
+                }
+            )
+            clear_pending_request()
+            st.rerun()
+
+        if action == "cancelled":
+            add_assistant_message("Request cancelled. Nothing was executed.")
+            update_sidebar_run_snapshot(
+                {
+                    "status": "cancelled",
+                    "provider_name": provider_name,
+                    "model_status": {},
+                }
+            )
+            clear_pending_request()
+            st.rerun()
+
+    # ---------------------------------------------------------------------
+    # Stage 2: Act preview
+    # ---------------------------------------------------------------------
+    if request_stage == "act_preview":
+        if action == "back":
+            add_assistant_message("Back to the plan. Review it again before moving to Act.")
+            update_sidebar_run_snapshot(
+                {
+                    "status": "waiting_for_action",
+                    "provider_name": provider_name,
+                    "model_status": {},
+                }
+            )
+            pending_request["stage"] = "plan"
+            st.session_state.pending_request = pending_request
+            st.rerun()
+
+        if action == "cancelled":
+            add_assistant_message("Request cancelled. Nothing was executed.")
+            update_sidebar_run_snapshot(
+                {
+                    "status": "cancelled",
+                    "provider_name": provider_name,
+                    "model_status": {},
+                }
+            )
+            clear_pending_request()
+            st.rerun()
+
+        if action == "confirm":
+            progress_data = build_progress_snapshot(
+                task=task,
+                repo_path=repo_path,
+                provider_name=provider_name,
+                total_steps=int(plan_preview.get("total_steps", 0) or 0),
+            )
+
+            add_assistant_message(
+                "Execution started. Progress will be shown below.",
+                kind="progress",
+                data=progress_data,
+            )
+
+            update_sidebar_run_snapshot(
+                {
+                    "status": "developing",
+                    "provider_name": provider_name,
+                }
+            )
+
+            with st.spinner("Running confirmed workflow..."):
+                result = execute_approved_workflow(
+                    task=task,
+                    repo_path=repo_path,
+                    provider_name=provider_name,
+                    approval_note=approval_note,
+                )
+
+            development_result = result.get("development_result", {}) or {}
+            model_status = development_result.get("model_status", {}) or {}
+
+            update_sidebar_run_snapshot(
+                {
+                    "status": result.get("status", "finished"),
+                    "provider_name": result.get("provider_name", provider_name),
+                    "model_status": model_status,
+                }
+            )
+
+            if provider_name == "local":
+                add_assistant_message(
+                    "Local provider finished. This run produced coding guidance and model output. "
+                    "Direct file changes are not implemented for the local provider yet."
+                )
+
+            add_assistant_message(
+                content=f"Workflow finished with status: {result.get('status', 'unknown')}.",
+                kind="result",
+                data=result,
+            )
+
+            clear_pending_request()
+            st.rerun()
 
 
 def main() -> None:
@@ -459,8 +665,9 @@ Use this chat to ask for code changes or updates.
 How it works:
 1. You ask for a change
 2. The Orchestrator creates a plan
-3. You approve, reject, or cancel
-4. After approval, the Developer and Tester run
+3. You move from Plan to Act
+4. You confirm changes
+5. The workflow runs and returns the result
 """
     )
 
@@ -468,13 +675,21 @@ How it works:
 
     pending_request = st.session_state.pending_request
     if pending_request:
-        action = render_pending_action_bar(request_id=pending_request["request_id"])
-        if action:
-            handle_pending_action(action)
+        request_stage = pending_request.get("stage", "plan")
+
+        if request_stage == "plan":
+            action = render_plan_action_bar(request_id=pending_request["request_id"])
+            if action:
+                handle_pending_action(action)
+
+        elif request_stage == "act_preview":
+            action = render_confirm_action_bar(request_id=pending_request["request_id"])
+            if action:
+                handle_pending_action(action)
 
     prompt_disabled = pending_request is not None
     prompt_placeholder = (
-        "Finish the pending approval first..."
+        "Finish the pending Plan / Act flow first..."
         if prompt_disabled
         else "Ask AI Dev Squad to create or update something..."
     )

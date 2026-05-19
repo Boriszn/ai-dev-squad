@@ -1,4 +1,9 @@
-"""Tests for the model router."""
+"""Tests for model router provider selection behavior.
+
+These tests keep router coverage focused and readable: they confirm that
+the default provider is returned when requested implicitly, and that
+unknown provider names fail with a clear error.
+"""
 
 import pytest
 
@@ -9,7 +14,10 @@ from app.models.model_router import ModelRouter
 
 
 def test_model_router_returns_default_provider() -> None:
-    """The router should return the default provider."""
+    """Return the configured default provider when no name is passed.
+
+    This protects the default provider contract used by workflow agents.
+    """
     settings = Settings(ENABLE_MOCK_TOOLS=True)
     router = ModelRouter(
         providers={
@@ -24,7 +32,10 @@ def test_model_router_returns_default_provider() -> None:
 
 
 def test_model_router_raises_for_unknown_provider() -> None:
-    """The router should reject unknown providers."""
+    """Raise a ValueError for unknown provider names.
+
+    This protects against silent fallback behavior for invalid provider IDs.
+    """
     settings = Settings(ENABLE_MOCK_TOOLS=True)
     router = ModelRouter(
         providers={"codex": CodexProvider(settings=settings)},
