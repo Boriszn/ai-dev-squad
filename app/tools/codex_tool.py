@@ -104,6 +104,10 @@ class CodexTool:
 
             command = [
                 command_name,
+                # --cd must be a top-level Codex flag so the selected repo is the
+                # active workspace root instead of the AI Dev Squad app repo.
+                "--cd",
+                repo_path,
                 "exec",
                 "--output-schema",
                 schema_path,
@@ -251,7 +255,19 @@ class CodexTool:
             }
 
         # Use the current documented writable sandbox mode for Act.
-        command = [command_name, "exec", "--sandbox", "workspace-write", task]
+        command = [
+            command_name,
+            # --cd sets the selected repo as Codex workspace root, and --add-dir
+            # explicitly allows writes there under workspace-write sandbox mode.
+            "--cd",
+            repo_path,
+            "--add-dir",
+            repo_path,
+            "exec",
+            "--sandbox",
+            "workspace-write",
+            task,
+        ]
 
         print("[Developer Agent] Codex is running...", flush=True)
 
