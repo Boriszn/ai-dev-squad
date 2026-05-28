@@ -9,6 +9,7 @@ Design goals:
 - safe handling of missing workflow fields
 - compact display of plan, preview, progress, and final results
 - lighter UI closer to the Cline-style flow
+- avoid repeating large prompt text too many times
 """
 
 from __future__ import annotations
@@ -143,11 +144,12 @@ def render_plan_message(message: dict[str, Any], index: int) -> None:
     st.markdown("## Plan Created")
     st.markdown(message.get("content", "The Orchestrator prepared a plan."))
 
-    task = data.get("task", "")
+    task = str(data.get("task", "")).strip()
     if task:
-        st.markdown(f"**Task:** {task}")
+        with st.expander("Original request", expanded=False):
+            st.markdown(task)
 
-    plan_summary = data.get("plan_summary", "")
+    plan_summary = str(data.get("plan_summary", "")).strip()
     if plan_summary:
         st.info(plan_summary)
 
@@ -157,13 +159,30 @@ def render_plan_message(message: dict[str, Any], index: int) -> None:
         for step_number, step in enumerate(plan_steps, start=1):
             st.write(f"{step_number}. {step}")
 
+    planned_file_changes = data.get("planned_file_changes", {}) or {}
+    create_files = planned_file_changes.get("create", []) or []
+    update_files = planned_file_changes.get("update", []) or []
+
+    if create_files or update_files:
+        st.markdown("**Likely file changes**")
+
+        if create_files:
+            st.markdown("Create")
+            for item in create_files:
+                st.write(f"- {item}")
+
+        if update_files:
+            st.markdown("Update")
+            for item in update_files:
+                st.write(f"- {item}")
+
     plan_notes = data.get("plan_notes", []) or []
     if plan_notes:
         with st.expander("Notes", expanded=False):
             for note in plan_notes:
                 st.write(f"- {note}")
 
-    act_summary = data.get("act_summary", "")
+    act_summary = str(data.get("act_summary", "")).strip()
     if act_summary:
         st.caption(f"Next step: {act_summary}")
 
@@ -189,7 +208,7 @@ def render_act_preview_message(message: dict[str, Any], index: int) -> None:
         )
     )
 
-    act_summary = data.get("act_summary", "")
+    act_summary = str(data.get("act_summary", "")).strip()
     if act_summary:
         st.info(act_summary)
 
@@ -208,7 +227,7 @@ def render_act_preview_message(message: dict[str, Any], index: int) -> None:
             st.write(f"- {item}")
 
     if not create_files and not update_files:
-        st.caption("No planned file changes yet.")
+        st.caption("No reliable file predictions available yet.")
 
     _render_status_line(data=data)
 
@@ -325,6 +344,39 @@ def render_development_result(data: dict[str, Any]) -> None:
         st.error(summary)
     else:
         st.info(summary)
+
+    files_to_create = development_result.get("files_to_create", []) or []
+    files_to_update = development_result.get("files_to_update", []) or []
+    notes = development_result.get("notes", []) or []
+
+    if files_to_create:
+        with st.expander("Suggested files to create", expanded=False):
+            for item in files_to_create:
+                path = str(item.get("path", "")).strip()
+                content = str(item.get("content", ""))
+                if path:
+                    st.markdown(f"**{path}**")
+                    if content:
+                        st.code(content, language=_guess_language_from_path(path))
+                    else:
+                        st.caption("No content returned.")
+
+    if files_to_update:
+        with st.expander("Suggested files to update", expanded=False):
+            for item in files_to_update:
+                path = str(item.get("path", "")).strip()
+                content = str(item.get("content", ""))
+                if path:
+                    st.markdown(f"**{path}**")
+                    if content:
+                        st.code(content, language=_guess_language_from_path(path))
+                    else:
+                        st.caption("No content returned.")
+
+    if notes:
+        with st.expander("Provider notes", expanded=False):
+            for note in notes:
+                st.write(f"- {note}")
 
     stdout_text = development_result.get("stdout", "")
     stderr_text = development_result.get("stderr", "")
@@ -498,3 +550,40 @@ def _render_status_line(data: dict[str, Any]) -> None:
         parts.append(f"**Repo:** {repo_path}")
 
     st.caption(" | ".join(parts))
+
+
+def _guess_language_from_path(path: str) -> str:
+    """Guess code block language from file path.
+
+    Args:
+        path: Relative or absolute file path.
+
+    Returns:
+        A short language label for Streamlit code rendering.
+    """
+    lower_path = path.lower()
+
+    if lower_path.endswith(".py"):
+        return "python"
+    if lower_path.endswith(".md"):
+        return "markdown"
+    if lower_path.endswith(".json"):
+        return "json"
+    if lower_path.endswith(".yaml") or lower_path.endswith(".yml"):
+        return "yaml"
+    if lower_path.endswith(".toml"):
+        return "toml"
+    if lower_path.endswith(".sh"):
+        return "bash"
+    if lower_path.endswith(".html"):
+        return "html"
+    if lower_path.endswith(".css"):
+        return "css"
+    if lower_path.endswith(".js"):
+        return "javascript"
+    if lower_path.endswith(".ts"):
+        return "typescript"
+    if lower_path.endswith(".sql"):
+        return "sql"
+
+    return "text"
