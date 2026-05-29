@@ -7,6 +7,7 @@ Current goals:
 - accept a user task through chat input
 - generate a structured plan first
 - keep chat enabled while the user refines the plan
+- answer simple plan-discussion questions from the current plan state
 - show an Act preview before execution
 - ask for human confirmation with buttons
 - run the workflow only after confirmation
@@ -21,9 +22,11 @@ Because of that, this UI handles the Plan / Act interaction at the UI layer:
 - then run the full workflow after confirmation
 
 Local provider note:
-The first local provider version is generation-only.
-It can return implementation guidance and code suggestions, but it does
-not directly apply file changes yet.
+The local provider is still generation-only for execution.
+It can now become more stable during plan refinements by reusing:
+- the original request
+- the latest accepted plan snapshot
+- additional user refinements
 """
 
 from __future__ import annotations
@@ -131,6 +134,36 @@ def add_assistant_message(
     )
 
 
+def upsert_assistant_message(
+    content: str,
+    kind: str,
+    data: dict[str, Any] | None = None,
+) -> None:
+    """Replace the latest assistant message of the same kind, or append it.
+
+    This keeps the UI cleaner by making the current plan and current
+    Act Preview behave like living cards instead of piling up duplicate
+    messages after every refinement.
+
+    Args:
+        content: Assistant message text.
+        kind: Message kind such as plan or act_preview.
+        data: Optional structured payload.
+    """
+    for index in range(len(st.session_state.chat_history) - 1, -1, -1):
+        item = st.session_state.chat_history[index]
+        if item.get("role") == "assistant" and item.get("kind") == kind:
+            st.session_state.chat_history[index] = {
+                "role": "assistant",
+                "kind": kind,
+                "content": content,
+                "data": data or {},
+            }
+            return
+
+    add_assistant_message(content=content, kind=kind, data=data)
+
+
 def clear_pending_request() -> None:
     """Clear the current pending request from session state."""
     st.session_state.pending_request = None
@@ -192,7 +225,6 @@ def build_plan_preview(
     messages.append("Plan is ready.")
     messages.append("Use Act, Reject, or Cancel to continue.")
 
-    # Add a local-provider note so the UI is clear before execution.
     if provider_name == "local":
         messages.append(
             "Local provider is in generation-only mode. "
@@ -214,9 +246,8 @@ def build_plan_preview(
 def infer_planned_file_changes(task: str) -> dict[str, list[str]]:
     """Infer a simple file preview from the task text.
 
-    This is a lightweight UI-first preview helper.
-    It does not inspect the repository yet. It only gives the user a
-    simple preview card until we introduce a real repo-aware preview step.
+    This is a lightweight fallback helper for providers that did not
+    return reliable file predictions.
 
     Args:
         task: User task text.
@@ -229,14 +260,20 @@ def infer_planned_file_changes(task: str) -> dict[str, list[str]]:
     create_files: list[str] = []
     update_files: list[str] = []
 
-    if any(keyword in task_lower for keyword in ["endpoint", "api", "/health", "route", "fastapi", "flask"]):
+    if any(
+        keyword in task_lower
+        for keyword in ["endpoint", "api", "/health", "route", "fastapi", "flask"]
+    ):
         update_files.append("app.py")
         create_files.append("tests/test_health.py")
 
     if any(keyword in task_lower for keyword in ["readme", "docs", "documentation", ".md"]):
         update_files.append("README.md")
 
-    if any(keyword in task_lower for keyword in ["test", "tests", "pytest"]) and "tests/test_health.py" not in create_files:
+    if (
+        any(keyword in task_lower for keyword in ["test", "tests", "pytest"])
+        and "tests/test_health.py" not in create_files
+    ):
         create_files.append("tests/test_feature.py")
 
     if not create_files and not update_files:
@@ -258,8 +295,10 @@ def build_act_preview(
 ) -> dict[str, Any]:
     """Build an Act preview before execution starts.
 
-    This is still a UI-layer preview for now. It prepares the card that
-    shows the likely file changes before the user confirms execution.
+    This uses file predictions from the current plan when available.
+    For Codex and other providers, a simple fallback can still be used.
+    For local provider, do not invent fallback file lists if the model
+    did not return reliable predictions.
 
     Args:
         task: User task text.
@@ -271,14 +310,26 @@ def build_act_preview(
     Returns:
         A structured act preview dictionary.
     """
-    planned_file_changes = plan_preview.get("planned_file_changes") or infer_planned_file_changes(task)
-    messages = list(plan_preview.get("messages", []))
+    original_planned_file_changes = plan_preview.get("planned_file_changes") or {}
+    create_files = original_planned_file_changes.get("create", []) or []
+    update_files = original_planned_file_changes.get("update", []) or []
 
+    used_heuristic_preview = False
+    planned_file_changes = original_planned_file_changes
+
+    if provider_name != "local" and not create_files and not update_files:
+        planned_file_changes = infer_planned_file_changes(task)
+        used_heuristic_preview = True
+
+    messages = list(plan_preview.get("messages", []))
     messages.append("Act preview is ready.")
     messages.append("Review the planned file changes and confirm to continue.")
 
     notes = list(plan_preview.get("plan_notes", []))
-    notes.append("File preview is currently a UI-first estimate, not a repo-aware diff yet.")
+    if used_heuristic_preview:
+        notes.append("File preview is currently a UI fallback estimate.")
+    elif provider_name == "local" and not create_files and not update_files:
+        notes.append("Local provider did not return reliable file predictions yet.")
 
     act_summary = plan_preview.get("act_summary") or (
         "Review the target files and confirm changes before execution starts."
@@ -358,14 +409,232 @@ def append_refinement_to_task(existing_task: str, refinement_text: str) -> str:
     )
 
 
+def build_effective_local_task(
+    original_task: str,
+    refinements: list[str],
+    last_plan: dict[str, Any] | None,
+) -> str:
+    """Build a richer local-provider task from prior plan state.
+
+    This is a lightweight quick fix before a real context/memory layer.
+    It makes the next local planning call include:
+    - the original request
+    - the previous accepted plan
+    - additional refinements
+
+    Args:
+        original_task: First user request.
+        refinements: Later user corrections or additions.
+        last_plan: Latest accepted plan snapshot, if available.
+
+    Returns:
+        Combined local planning prompt text.
+    """
+    sections = [f"Original request:\n{original_task.strip()}"]
+
+    if last_plan:
+        plan_summary = str(last_plan.get("plan_summary", "")).strip()
+        plan_steps = last_plan.get("plan_steps", []) or []
+        planned_file_changes = last_plan.get("planned_file_changes", {}) or {}
+        create_files = planned_file_changes.get("create", []) or []
+        update_files = planned_file_changes.get("update", []) or []
+
+        previous_plan_lines: list[str] = []
+        if plan_summary:
+            previous_plan_lines.append(f"- Summary: {plan_summary}")
+
+        if plan_steps:
+            previous_plan_lines.append("- Steps:")
+            for item in plan_steps:
+                previous_plan_lines.append(f"  - {item}")
+
+        if create_files:
+            previous_plan_lines.append(f"- Files to create: {create_files}")
+
+        if update_files:
+            previous_plan_lines.append(f"- Files to update: {update_files}")
+
+        if previous_plan_lines:
+            sections.append(
+                "Previous accepted plan:\n" + "\n".join(previous_plan_lines)
+            )
+
+    if refinements:
+        refinement_lines = ["Additional refinements:"]
+        for item in refinements:
+            refinement_lines.append(f"- {item}")
+        sections.append("\n".join(refinement_lines))
+
+    sections.append(
+        "Important rule:\n"
+        "Preserve previous accepted decisions unless a newer refinement explicitly changes them."
+    )
+
+    return "\n\n".join(section for section in sections if section.strip())
+
+
+def _get_active_plan_data(pending_request: dict[str, Any]) -> dict[str, Any]:
+    """Return the most relevant plan-like data for the current stage.
+
+    Args:
+        pending_request: Current pending request object.
+
+    Returns:
+        Plan or act-preview data dictionary.
+    """
+    stage = pending_request.get("stage", "plan")
+
+    if stage == "act_preview":
+        return pending_request.get("act_preview") or pending_request.get("plan_preview") or {}
+
+    return pending_request.get("plan_preview") or {}
+
+
+def _extract_plan_file_lists(plan_data: dict[str, Any]) -> tuple[list[str], list[str]]:
+    """Extract create/update file lists from plan data.
+
+    Args:
+        plan_data: Current plan or act-preview payload.
+
+    Returns:
+        Tuple of:
+        - files to create
+        - files to update
+    """
+    planned_file_changes = plan_data.get("planned_file_changes", {}) or {}
+    create_files = planned_file_changes.get("create", []) or []
+    update_files = planned_file_changes.get("update", []) or []
+    return list(create_files), list(update_files)
+
+
+def build_plan_discussion_answer(
+    question_text: str,
+    plan_data: dict[str, Any],
+) -> str | None:
+    """Answer simple plan-discussion questions from existing plan data.
+
+    This avoids sending every small follow-up back to the model when the user
+    is only asking about the current plan.
+
+    Supported intent examples:
+    - how many files
+    - what files
+    - summarize plan
+    - give me detailed plan
+    - list of files to update
+
+    Args:
+        question_text: New user message.
+        plan_data: Current plan or act-preview payload.
+
+    Returns:
+        Assistant answer text, or None if the message should still be treated
+        as a normal refinement.
+    """
+    normalized = " ".join(question_text.lower().split())
+
+    create_files, update_files = _extract_plan_file_lists(plan_data)
+    all_files = create_files + update_files
+    unique_files = list(dict.fromkeys(all_files))
+
+    if any(
+        phrase in normalized
+        for phrase in [
+            "how many files",
+            "how many file",
+            "number of files",
+            "how many files are you going to update",
+            "how many files will you update",
+        ]
+    ):
+        if not unique_files:
+            return "Right now I do not have reliable file predictions yet."
+
+        parts = [f"I currently plan to change {len(unique_files)} file(s)."]
+
+        if create_files:
+            parts.append(f"Create: {', '.join(create_files)}.")
+        if update_files:
+            parts.append(f"Update: {', '.join(update_files)}.")
+
+        return " ".join(parts)
+
+    if any(
+        phrase in normalized
+        for phrase in [
+            "what files",
+            "which files",
+            "list files",
+            "show files",
+            "list of files",
+            "files to update",
+            "files you will update",
+            "files are you going to update",
+            "provide me with the list of files",
+            "provide me with the list of files to update",
+            "provide the list of files",
+            "provide the list of files to update",
+            "what are the files",
+            "what file",
+        ]
+    ):
+        if not unique_files:
+            return "Right now I do not have reliable file predictions yet."
+
+        lines = ["Current planned file changes:"]
+        if create_files:
+            lines.append(f"- Create: {', '.join(create_files)}")
+        if update_files:
+            lines.append(f"- Update: {', '.join(update_files)}")
+        return "\n".join(lines)
+
+    if any(
+        phrase in normalized
+        for phrase in [
+            "summarize plan",
+            "summary of the plan",
+            "detailed plan",
+            "plan details",
+            "give me detailed plan",
+            "what is the plan",
+        ]
+    ):
+        plan_summary = str(plan_data.get("plan_summary", "")).strip()
+        plan_steps = plan_data.get("plan_steps", []) or []
+
+        lines: list[str] = []
+        if plan_summary:
+            lines.append(f"Plan summary: {plan_summary}")
+
+        if plan_steps:
+            lines.append("Implementation plan:")
+            for index, step in enumerate(plan_steps, start=1):
+                lines.append(f"{index}. {step}")
+
+        if create_files or update_files:
+            lines.append("Planned file changes:")
+            if create_files:
+                lines.append(f"- Create: {', '.join(create_files)}")
+            if update_files:
+                lines.append(f"- Update: {', '.join(update_files)}")
+
+        if not lines:
+            return "I do not have a detailed plan summary available yet."
+
+        return "\n".join(lines)
+
+    return None
+
+
 def refresh_pending_request_from_refinement(refinement_text: str) -> None:
     """Treat a new chat message as a refinement of the current pending request.
 
-    This is the key change for the simpler Cline-like UX:
-    - chat stays enabled during Plan and Act Preview
-    - user can continue discussing the task
-    - the latest message refines the same pending request
-    - the plan is rebuilt instead of starting a separate blocked flow
+    For local provider, this uses a lightweight baseline approach:
+    - original request
+    - previous accepted plan
+    - latest refinements
+
+    That makes refinements more stable without needing a full context layer.
 
     Args:
         refinement_text: New user instruction added during the current flow.
@@ -379,13 +648,34 @@ def refresh_pending_request_from_refinement(refinement_text: str) -> None:
     provider_name = pending_request["provider_name"]
     approval_note = pending_request["approval_note"]
     current_task = pending_request["task"]
-
-    updated_task = append_refinement_to_task(
-        existing_task=current_task,
-        refinement_text=refinement_text,
-    )
+    original_task = pending_request.get("original_task", current_task)
+    refinements = list(pending_request.get("refinements", []))
+    last_plan_snapshot = pending_request.get("last_plan_snapshot")
 
     add_user_message(refinement_text)
+
+    active_plan_data = _get_active_plan_data(pending_request)
+    plan_discussion_answer = build_plan_discussion_answer(
+        question_text=refinement_text,
+        plan_data=active_plan_data,
+    )
+
+    if plan_discussion_answer is not None:
+        add_assistant_message(plan_discussion_answer)
+        return
+
+    if provider_name == "local":
+        refinements.append(refinement_text)
+        updated_task = build_effective_local_task(
+            original_task=original_task,
+            refinements=refinements,
+            last_plan=last_plan_snapshot,
+        )
+    else:
+        updated_task = append_refinement_to_task(
+            existing_task=current_task,
+            refinement_text=refinement_text,
+        )
 
     with st.spinner("Updating plan..."):
         updated_plan_preview = build_plan_preview(
@@ -406,21 +696,24 @@ def refresh_pending_request_from_refinement(refinement_text: str) -> None:
             )
 
     pending_request["task"] = updated_task
+    pending_request["original_task"] = original_task
+    pending_request["refinements"] = refinements
     pending_request["plan_preview"] = updated_plan_preview
+    pending_request["last_plan_snapshot"] = updated_plan_preview
     pending_request["act_preview"] = updated_act_preview
 
-    if request_stage == "act_preview":
-        add_assistant_message(
-            content="I updated the plan and refreshed the Act preview with your latest instruction.",
-            kind="plan",
-            data=updated_plan_preview,
-        )
-        add_assistant_message(
+    upsert_assistant_message(
+        content="I updated the plan with your latest instruction.",
+        kind="plan",
+        data=updated_plan_preview,
+    )
+
+    if request_stage == "act_preview" and updated_act_preview:
+        upsert_assistant_message(
             content="Here is the refreshed Act preview.",
             kind="act_preview",
             data=updated_act_preview,
         )
-
         update_sidebar_run_snapshot(
             {
                 "status": updated_act_preview.get("status", "act_preview_ready"),
@@ -429,12 +722,6 @@ def refresh_pending_request_from_refinement(refinement_text: str) -> None:
             }
         )
     else:
-        add_assistant_message(
-            content="I updated the plan with your latest instruction.",
-            kind="plan",
-            data=updated_plan_preview,
-        )
-
         update_sidebar_run_snapshot(
             {
                 "status": updated_plan_preview.get("status", "waiting_for_action"),
@@ -568,6 +855,14 @@ def start_new_pending_request(
 
     add_user_message(task_text)
 
+    effective_task = task_text
+    if provider_name == "local":
+        effective_task = build_effective_local_task(
+            original_task=task_text,
+            refinements=[],
+            last_plan=None,
+        )
+
     with st.spinner("Creating plan..."):
         update_sidebar_run_snapshot(
             {
@@ -577,7 +872,7 @@ def start_new_pending_request(
             }
         )
         plan_preview = build_plan_preview(
-            task=task_text,
+            task=effective_task,
             repo_path=repo_path,
             provider_name=provider_name,
             approval_note=approval_note,
@@ -591,7 +886,7 @@ def start_new_pending_request(
         }
     )
 
-    add_assistant_message(
+    upsert_assistant_message(
         content="I created a plan for your request. Please review it before moving to Act.",
         kind="plan",
         data=plan_preview,
@@ -600,11 +895,14 @@ def start_new_pending_request(
     st.session_state.pending_request = {
         "request_id": request_id,
         "stage": "plan",
-        "task": task_text,
+        "task": effective_task,
+        "original_task": task_text,
+        "refinements": [],
         "repo_path": repo_path,
         "provider_name": provider_name,
         "approval_note": approval_note,
         "plan_preview": plan_preview,
+        "last_plan_snapshot": plan_preview,
         "act_preview": None,
     }
 
@@ -678,7 +976,7 @@ def handle_pending_action(action: str) -> None:
                 plan_preview=plan_preview,
             )
 
-            add_assistant_message(
+            upsert_assistant_message(
                 "Here is the Act preview. Review the planned file changes before execution.",
                 kind="act_preview",
                 data=preview,
@@ -726,7 +1024,6 @@ def handle_pending_action(action: str) -> None:
     # ---------------------------------------------------------------------
     if request_stage == "act_preview":
         if action == "back":
-            add_assistant_message("Back to the plan. You can continue refining it in chat.")
             update_sidebar_run_snapshot(
                 {
                     "status": "waiting_for_action",
@@ -854,8 +1151,6 @@ How it works:
             if action:
                 handle_pending_action(action)
 
-    # Chat should stay enabled while the user is still refining the plan.
-    # Only disable it while a confirmed execution is running.
     prompt_disabled = request_stage == "running"
     prompt_placeholder = (
         "Execution is running..."

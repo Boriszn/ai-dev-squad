@@ -385,6 +385,8 @@ class LocalProvider(BaseProvider):
             "You are a local coding assistant for AI Dev Squad. "
             "You are in Plan mode. "
             "Analyze the repository context carefully and create a practical implementation plan. "
+            "If the task includes a previous accepted plan and new refinements, preserve earlier decisions unless the new refinement explicitly changes them. "
+            "Do not restart the plan from scratch. "
             "Do not execute changes. "
             "Do not repeat the full user prompt in the summary. "
             "Do not wrap the answer in markdown fences. "
@@ -413,6 +415,7 @@ class LocalProvider(BaseProvider):
             "- If you are not confident about file predictions, return empty arrays.\n"
             "- Keep plan_summary short.\n"
             "- Do not echo the full prompt.\n"
+            "- Preserve previous accepted decisions unless the newest refinement overrides them.\n"
         )
 
         return [
@@ -438,6 +441,8 @@ class LocalProvider(BaseProvider):
             "You are a local coding assistant for AI Dev Squad. "
             "You are in Act mode, but file writes are still handled outside the model. "
             "Analyze the repository context and return structured file changes only. "
+            "If the task includes a previous accepted plan and new refinements, preserve earlier accepted decisions unless the newest refinement explicitly changes them. "
+            "Do not restart from scratch. "
             "Do not return shell commands. "
             "Do not return markdown fences. "
             "Do not return explanations outside JSON. "
@@ -466,6 +471,7 @@ class LocalProvider(BaseProvider):
             "- Only include files you are confident about.\n"
             "- If uncertain, return empty file arrays.\n"
             "- Keep summary short.\n"
+            "- Preserve previous accepted decisions unless the newest refinement overrides them.\n"
         )
 
         return [
